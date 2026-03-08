@@ -1,0 +1,37 @@
+const paymentService = require("./payment.service");
+
+class PaymentController {
+  async createCheckoutSession(req, res) {
+    const result = await paymentService.createJobCheckoutSession(req.user, req.body);
+    res.status(201).json({
+      success: true,
+      message: "Checkout session created successfully",
+      data: result,
+    });
+  }
+
+  async listPayments(req, res) {
+    const result = await paymentService.listPayments(req.user, req.query);
+    res.json({ success: true, ...result });
+  }
+
+  async getPaymentById(req, res) {
+    const payment = await paymentService.getPaymentById(req.user, req.params.paymentId);
+    res.json({ success: true, data: payment });
+  }
+
+  async handleWebhook(req, res, next) {
+    try {
+      const result = await paymentService.handleStripeWebhook(
+        req.body,
+        req.headers["stripe-signature"]
+      );
+
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+module.exports = new PaymentController();

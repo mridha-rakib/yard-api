@@ -1,0 +1,328 @@
+const AppError = require("../../errors/AppError");
+const buildPagination = require("../../utils/pagination");
+const { ROLES } = require("../../constants/roles");
+const jobRepository = require("./job.repository");
+
+class JobService {
+  normalizeUrgency(urgency = "flexible") {
+    if (urgency === "within24hours") {
+      return "within24";
+    }
+
+    if (["today", "within24", "flexible", "scheduled"].includes(urgency)) {
+      return urgency;
+    }
+
+    return "flexible";
+  }
+
+  buildTitle(serviceType, title) {
+    if (title) {
+      return title;
+    }
+
+    return String(serviceType || "Service Request")
+      .replace(/[-_]/g, " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
+  getPriorityFromUrgency(urgency, priority) {
+    if (priority) {
+      return priority;
+    }
+
+    if (urgency === "today") {
+      return "high";
+    }
+
+    if (urgency === "within24") {
+      return "medium";
+    }
+
+    return "low";
+  }
+
+  mapCreatePayload(user, payload) {
+    const serviceType = payload.serviceType || payload.category;
+    const urgency = this.normalizeUrgency(payload.urgency);
+    const jobDescription =
+      payload.jobDescription || payload.description || payload.stateCountry;
+
+    return {
+      customer: user._id,
+      assignedWorker: null,
+      title: this.buildTitle(serviceType, payload.title),
+      serviceType,
+      fullName: payload.fullName || user.name,
+      phoneNumber: payload.phoneNumber || payload.phone || user.phone,
+      email: payload.email || user.email,
+      streetAddress: payload.streetAddress,
+      city: payload.city,
+      state: payload.state || "",
+      zipCode: payload.zipCode,
+      jobDescription,
+      urgency,
+      preferredDate: payload.preferredDate || null,
+      preferredTime: payload.preferredTime || "",
+      jobSize: payload.jobSize || "",
+      priority: this.getPriorityFromUrgency(urgency, payload.priority),
+      estimatedPrice: Number(payload.estimatedPrice || payload.estimatedTotal || 0),
+      priceQuoted: Number(payload.priceQuoted || 0),
+      photos: payload.photos || payload.photoUrls || [],
+      paymentStatus: payload.isPaid ? "paid" : "pending",
+      isPaid: Boolean(payload.isPaid),
+      status: "new",
+    };
+  }
+
+  validateCreatePayload(payload) {
+    const requiredFields = [
+      "serviceType",
+      "streetAddress",
+      "city",
+      "zipCode",
+      "jobDescription",
+    ];
+
+    const missingField = requiredFields.find((field) => !payload[field]);
+    if (missingField) {
+      throw new AppError(`${missingField} is required`, 400);
+    }
+  }
+
+  async createJob(user, payload) {
+    if (![ROLES.CUSTOMER, ROLES.ADMIN].includes(user.role)) {
+      throw new AppError("Only customers and admins can create jobs", 403);
+    }
+
+    const mappedPayload = this.mapCreatePayload(user, payload);
+    this.validateCreatePayload(mappedPayload);
+
+    const job = await jobRepository.create(mappedPayload);
+    return jobRepository.findJobWithRelations(job._id);
+  }
+
+  buildQueryFilter(query = {}) {
+    const filter = {};
+
+    if (query.status) {
+      filter.status = query.status;
+    }
+
+    if (query.paymentStatus) {
+      filter.paymentStatus = query.paymentStatus;
+    }
+
+    if (query.serviceType) {
+      filter.serviceType = query.serviceType;
+    }
+
+    if (query.customerId) {
+      filter.customer = query.customerId;
+    }
+
+    if (query.workerId) {
+      filter.assignedWorker = query.workerId;
+    }
+
+    if (query.search) {
+      filter.$or = [
+        { title: { $regex: query.search, $options: "i" } },
+        { fullName: { $regex: query.search, $options: "i" } },
+        { email: { $regex: query.search, $options: "i" } },
+        { serviceType: { $regex: query.search, $options: "i" } },
+        { city: { $regex: query.search, $options: "i" } },
+      ];
+    }
+
+    return filter;
+  }
+
+  async listJobs(requestingUser, query = {}) {
+    const pagination = buildPagination(query);
+    const filter = this.buildQueryFilter(query);
+
+    if (!requestingUser) {
+      filter.status = "new";
+      filter.assignedWorker = null;
+    }
+
+    if (requestingUser?.role === ROLES.CUSTOMER && !query.includeAll) {
+      filter.customer = requestingUser._id;
+    }
+
+    if (requestingUser?.role === ROLES.WORKER && !query.includeAll) {
+      filter.$or = [
+        { assignedWorker: requestingUser._id },
+        { status: "new", assignedWorker: null },
+      ];
+    }
+
+    return jobRepository.findManyWithRelations(filter, {
+      ...pagination,
+      sort: { createdAt: -1 },
+    });
+  }
+
+  async listAvailableJobs(worker, query = {}) {
+    if (worker.role !== ROLES.WORKER) {
+      throw new AppError("Only workers can view available jobs", 403);
+    }
+
+    if (worker.workerStatus !== "approved") {
+      throw new AppError("Your worker account is awaiting approval", 403);
+    }
+
+    const pagination = buildPagination(query);
+    const filter = {
+      status: "new",
+      assignedWorker: null,
+    };
+
+    if (query.search) {
+      filter.$or = [
+        { title: { $regex: query.search, $options: "i" } },
+        { serviceType: { $regex: query.search, $options: "i" } },
+        { city: { $regex: query.search, $options: "i" } },
+      ];
+    }
+
+    return jobRepository.findManyWithRelations(filter, {
+      ...pagination,
+      sort: { createdAt: -1 },
+    });
+  }
+
+  async listMyJobs(user, query = {}) {
+    const pagination = buildPagination(query);
+    const filter = user.role === ROLES.WORKER ? { assignedWorker: user._id } : { customer: user._id };
+
+    if (query.status) {
+      filter.status = query.status;
+    }
+
+    const result = await jobRepository.findManyWithRelations(filter, {
+      ...pagination,
+      sort: { createdAt: -1 },
+    });
+
+    const [newCount, assignedCount, inProgressCount, completedCount] = await Promise.all([
+      jobRepository.count({ ...filter, status: "new" }),
+      jobRepository.count({ ...filter, status: "assigned" }),
+      jobRepository.count({ ...filter, status: "in_progress" }),
+      jobRepository.count({ ...filter, status: "completed" }),
+    ]);
+
+    return {
+      ...result,
+      summary: {
+        new: newCount,
+        assigned: assignedCount,
+        inProgress: inProgressCount,
+        completed: completedCount,
+      },
+    };
+  }
+
+  async getJobById(requestingUser, jobId) {
+    const job = await jobRepository.findJobWithRelations(jobId);
+
+    if (!job) {
+      throw new AppError("Job not found", 404);
+    }
+
+    if (
+      requestingUser &&
+      requestingUser.role !== ROLES.ADMIN &&
+      String(job.customer?._id || job.customer) !== String(requestingUser._id) &&
+      String(job.assignedWorker?._id || job.assignedWorker || "") !== String(requestingUser._id) &&
+      !(requestingUser.role === ROLES.WORKER && job.status === "new")
+    ) {
+      throw new AppError("You do not have access to this job", 403);
+    }
+
+    return job;
+  }
+
+  async updateJob(user, jobId, payload) {
+    const job = await jobRepository.findById(jobId);
+
+    if (!job) {
+      throw new AppError("Job not found", 404);
+    }
+
+    if (user.role !== ROLES.ADMIN && String(job.customer) !== String(user._id)) {
+      throw new AppError("You do not have permission to update this job", 403);
+    }
+
+    if (["completed", "paid"].includes(job.status)) {
+      throw new AppError("Completed jobs cannot be updated", 400);
+    }
+
+    const update = {};
+    [
+      "title",
+      "serviceType",
+      "streetAddress",
+      "city",
+      "state",
+      "zipCode",
+      "preferredTime",
+      "jobSize",
+      "priority",
+    ].forEach((field) => {
+      if (payload[field] !== undefined) {
+        update[field] = payload[field];
+      }
+    });
+
+    if (payload.jobDescription !== undefined || payload.description !== undefined) {
+      update.jobDescription = payload.jobDescription || payload.description;
+    }
+
+    if (payload.urgency !== undefined) {
+      update.urgency = this.normalizeUrgency(payload.urgency);
+    }
+
+    if (payload.preferredDate !== undefined) {
+      update.preferredDate = payload.preferredDate || null;
+    }
+
+    if (payload.photos !== undefined || payload.photoUrls !== undefined) {
+      update.photos = payload.photos || payload.photoUrls || [];
+    }
+
+    if (payload.estimatedPrice !== undefined || payload.estimatedTotal !== undefined) {
+      update.estimatedPrice = Number(payload.estimatedPrice || payload.estimatedTotal || 0);
+    }
+
+    const updatedJob = await jobRepository.updateById(jobId, update);
+    return jobRepository.findJobWithRelations(updatedJob._id);
+  }
+
+  async cancelJob(user, jobId, reason = "") {
+    const job = await jobRepository.findById(jobId);
+
+    if (!job) {
+      throw new AppError("Job not found", 404);
+    }
+
+    const isAllowed =
+      user.role === ROLES.ADMIN ||
+      String(job.customer) === String(user._id) ||
+      String(job.assignedWorker || "") === String(user._id);
+
+    if (!isAllowed) {
+      throw new AppError("You do not have permission to cancel this job", 403);
+    }
+
+    const updatedJob = await jobRepository.updateById(jobId, {
+      status: "cancelled",
+      cancelReason: reason,
+    });
+
+    return jobRepository.findJobWithRelations(updatedJob._id);
+  }
+}
+
+module.exports = new JobService();

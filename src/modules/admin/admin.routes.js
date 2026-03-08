@@ -1,31 +1,25 @@
 const express = require("express");
-const {
-  getAllWorkers,
-  getPendingWorkers,
-  approveWorker,
-  rejectWorker,
-  getAllCustomers,
-  getAllWorkers,
-  getAllBookings,
-  updateBookingStatus,
-  getAllPayments,
-  getDashboardStats,
-} = require("./admin.controller");
-
-const { protect, isAdmin } = require("../../middleware/auth.middleware");
-const express = require("express");
+const asyncHandler = require("../../utils/asyncHandler");
+const adminController = require("./admin.controller");
+const { authenticate, authorize } = require("../../middleware/auth.middleware");
+const { ROLES } = require("../../constants/roles");
 
 const router = express.Router();
 
-router.get("/workers", protect, isAdmin, getAllWorkers);
-router.get("/workers/pending", protect, isAdmin, getPendingWorkers);
-router.patch("/workers/:id/approve", protect, isAdmin, approveWorker);
-router.patch("/workers/:id/reject", protect, isAdmin, rejectWorker);
-router.get("/customers", protect, isAdmin, getAllCustomers);
-router.get("/workers", protect, isAdmin, getAllWorkers);
-router.get("/bookings", protect, isAdmin, getAllBookings);
-router.patch("/bookings/:id", protect, isAdmin, updateBookingStatus);
-router.get("/payments", protect, isAdmin, getAllPayments);
-router.get("/stats", protect, isAdmin, getDashboardStats);
+router.use(authenticate, authorize(ROLES.ADMIN));
+
+router.get("/dashboard", asyncHandler(adminController.getDashboardStats));
+router.get("/workers", asyncHandler(adminController.listWorkers));
+router.get("/workers/:workerId", asyncHandler(adminController.getWorkerById));
+router.patch("/workers/:workerId/approve", asyncHandler(adminController.approveWorker));
+router.patch("/workers/:workerId/reject", asyncHandler(adminController.rejectWorker));
+router.get("/customers", asyncHandler(adminController.listCustomers));
+router.get("/customers/:customerId", asyncHandler(adminController.getCustomerById));
+router.get("/bookings", asyncHandler(adminController.listBookings));
+router.patch("/bookings/:bookingId/status", asyncHandler(adminController.updateBookingStatus));
+router.get("/payments", asyncHandler(adminController.listPayments));
+router.get("/support", asyncHandler(adminController.listSupportConversations));
+router.get("/settings", asyncHandler(adminController.getSettings));
+router.patch("/settings", asyncHandler(adminController.updateSettings));
 
 module.exports = router;

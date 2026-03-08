@@ -1,81 +1,74 @@
-const Payment = require("../payment/payment.model");
-const User = require("../user/user.model");
-const Booking = require("../booking/booking.model");
+const adminService = require("./admin.service");
 
-// 🔹 Get all workers
-const getAllWorkers = async (req, res) => {
-  const workers = await User.find({ role: "worker" });
-  res.json(workers);
-};
+class AdminController {
+  async getDashboardStats(req, res) {
+    const stats = await adminService.getDashboardStats();
+    res.json({ success: true, data: stats });
+  }
 
-// 🔹 Get pending workers
-const getPendingWorkers = async (req, res) => {
-  const workers = await User.find({
-    role: "worker",
-    workerStatus: "pending",
-  });
-  res.json(workers);
-};
+  async listWorkers(req, res) {
+    const result = await adminService.listWorkers(req.query);
+    res.json({ success: true, ...result });
+  }
 
-// 🔹 Approve worker
-const approveWorker = async (req, res) => {
-  const worker = await User.findByIdAndUpdate(
-    req.params.id,
-    { workerStatus: "approved" },
-    { new: true },
-  );
+  async getWorkerById(req, res) {
+    const worker = await adminService.getWorkerById(req.params.workerId);
+    res.json({ success: true, data: worker });
+  }
 
-  res.json({ message: "Worker approved", worker });
-};
+  async approveWorker(req, res) {
+    const worker = await adminService.updateWorkerStatus(req.params.workerId, "approved");
+    res.json({ success: true, message: "Worker approved", data: worker });
+  }
 
-// 🔹 Reject worker
-const rejectWorker = async (req, res) => {
-  const worker = await User.findByIdAndUpdate(
-    req.params.id,
-    { workerStatus: "rejected" },
-    { new: true },
-  );
+  async rejectWorker(req, res) {
+    const worker = await adminService.updateWorkerStatus(req.params.workerId, "rejected");
+    res.json({ success: true, message: "Worker rejected", data: worker });
+  }
 
-  res.json({ message: "Worker rejected", worker });
-};
+  async listCustomers(req, res) {
+    const result = await adminService.listCustomers(req.query);
+    res.json({ success: true, ...result });
+  }
 
-const getAllCustomers = async (req, res) => {
-  const customers = await User.find({ role: "customer" });
-  res.json(customers);
-};
+  async getCustomerById(req, res) {
+    const customer = await adminService.getCustomerById(req.params.customerId);
+    res.json({ success: true, data: customer });
+  }
 
-const getAllBookings = async (req, res) => {
-  const bookings = await Booking.find()
-    .populate("customerId")
-    .populate("workerId")
-    .populate("jobId");
-  res.json(bookings);
-};
-const updateBookingStatus = async (req, res) => {
-  const booking = await Booking.findByIdAndUpdate(
-    req.params.id,
-    { status: req.body.status },
-    { new: true },
-  );
-  res.json(booking);
-};
+  async listBookings(req, res) {
+    const result = await adminService.listBookings(req.query);
+    res.json({ success: true, ...result });
+  }
 
+  async updateBookingStatus(req, res) {
+    const booking = await adminService.updateBookingStatus(
+      req.user,
+      req.params.bookingId,
+      req.body.status
+    );
+    res.json({ success: true, message: "Booking updated", data: booking });
+  }
 
-const getAllPayments = async (req, res) => {
-  const payments = await Payment.find()
-    .populate("customerId")
-    .populate("workerId")
-    .populate("jobId");
+  async listPayments(req, res) {
+    const result = await adminService.listPayments(req.query);
+    res.json({ success: true, ...result });
+  }
 
-  res.json(payments);
-};
+  async listSupportConversations(req, res) {
+    const result = await adminService.listSupportConversations(req.query);
+    res.json({ success: true, ...result });
+  }
 
-module.exports = {
-  getAllWorkers,
-  getPendingWorkers,
-  approveWorker,
-  rejectWorker,
-  getAllCustomers,
-  getAllBookings,
-  updateBookingStatus
-};
+  async getSettings(req, res) {
+    const settings = await adminService.getSettings();
+    res.json({ success: true, data: settings });
+  }
+
+  async updateSettings(req, res) {
+    const settings = await adminService.updateSettings(req.body);
+    res.json({ success: true, message: "Settings updated", data: settings });
+  }
+}
+
+module.exports = new AdminController();

@@ -1,75 +1,113 @@
 const jwt = require("jsonwebtoken");
-const User = require("../modules/user/user.model");
-// const protect = async (req, res, next) => {
-//   try {
-//     let token;
+const env = require("../config/env");
+const AppError = require("../errors/AppError");
+const authSessionRepository = require("../modules/auth/auth-session.repository");
+const userRepository = require("../modules/users/user.repository");
 
-//     if (
-//       req.headers.authorization &&
-//       req.headers.authorization.startsWith("")
-//     ) {
-//       token = req.headers.authorization.split(" ")[1];
-//     }
+const extractToken = (authorizationHeader = "") => {
+  if (!authorizationHeader) {
+    return null;
+  }
 
-//     if (!token) {
-//       return res.status(401).json({ message: "Not authorized, no token" });
-//     }
+  if (authorizationHeader.startsWith("Bearer ")) {
+    return authorizationHeader.slice(7);
+  }
 
-//     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  return authorizationHeader;
+};
 
-//     const user = await User.findById(decoded.id).select("-password");
+const validateSession = async (decoded) => {
+  if (decoded.type !== "access") {
+    throw new AppError("Invalid access token type", 401);
+  }
 
-//     if (!user) {
-//       return res.status(401).json({ message: "User not found" });
-//     }
+  const session = await authSessionRepository.findActiveById(decoded.sessionId);
 
-//     req.user = user;
+  if (!session) {
+    throw new AppError("Session is invalid or has been revoked", 401);
+  }
 
-//     next();
-//   } catch (error) {
-//     res.status(401).json({ message: "Token failed" });
-//   }
-// };
+  if (String(session.user) !== String(decoded.userId)) {
+    throw new AppError("Token session does not match the authenticated user", 401);
+  }
 
-const protect = async (req, res, next) => {
+  if (session.expiresAt <= new Date()) {
+    await authSessionRepository.revokeById(session._id, "session_expired");
+    throw new AppError("Session has expired", 401);
+  }
+
+  return session;
+};
+
+const authenticate = async (req, res, next) => {
   try {
-    const token = req.headers.authorization;
+    const token = extractToken(req.headers.authorization);
 
     if (!token) {
-      return res.status(401).json({ message: "Not authorized, no token" });
+      throw new AppError("Authentication token is missing", 401);
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    const user = await User.findById(decoded.id).select("-password");
+    const decoded = jwt.verify(token, env.accessTokenSecret);
+    const session = await validateSession(decoded);
+    const user = await userRepository.findById(decoded.userId);
 
     if (!user) {
-      return res.status(401).json({ message: "User not found" });
+      throw new AppError("Authenticated user no longer exists", 401);
     }
 
     req.user = user;
-
+    req.auth = {
+      sessionId: String(session._id),
+      tokenType: decoded.type,
+    };
     next();
   } catch (error) {
-    res.status(401).json({ message: "Token failed" });
+    next(error.name === "JsonWebTokenError" || error.name === "TokenExpiredError"
+      ? new AppError("Invalid or expired token", 401)
+      : error);
   }
 };
 
-const authorize = (...roles) => {
-  return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ message: "Access denied" });
+const authorize = (...roles) => (req, res, next) => {
+  if (!req.user) {
+    return next(new AppError("Authentication is required", 401));
+  }
+
+  if (!roles.includes(req.user.role)) {
+    return next(new AppError("You do not have permission to access this resource", 403));
+  }
+
+  return next();
+};
+
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const token = extractToken(req.headers.authorization);
+
+    if (!token) {
+      return next();
     }
 
-    next();
-  };
-};
-
-const isAdmin = (req, res, next) => {
-  if (req.user.role !== "admin") {
-    return res.status(403).json({ message: "Admin access only" });
+    const decoded = jwt.verify(token, env.accessTokenSecret);
+    const session = await validateSession(decoded);
+    const user = await userRepository.findById(decoded.userId);
+    req.user = user || null;
+    req.auth = user
+      ? {
+          sessionId: String(session._id),
+          tokenType: decoded.type,
+        }
+      : null;
+    return next();
+  } catch (error) {
+    req.user = null;
+    req.auth = null;
+    return next();
   }
-  next();
 };
 
-module.exports = { protect, authorize, isAdmin };
+module.exports = {
+  authenticate,
+  authorize,
+  optionalAuthenticate,
+};
