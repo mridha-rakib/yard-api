@@ -1,5 +1,9 @@
+const bcrypt = require("bcryptjs");
+const env = require("../../config/env");
 const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
+const { ROLES } = require("../../constants/roles");
+const { USER_STATUSES } = require("../../constants/statuses");
 const userRepository = require("../users/user.repository");
 const jobRepository = require("../jobs/job.repository");
 const bookingRepository = require("../bookings/booking.repository");
@@ -18,6 +22,78 @@ class AdminService {
       $or: fields.map((field) => ({
         [field]: { $regex: query.search, $options: "i" },
       })),
+    };
+  }
+
+  async seedAdmin() {
+    const existingAdminCount = await userRepository.count({ role: ROLES.ADMIN });
+
+    if (existingAdminCount > 0) {
+      return {
+        status: "skipped",
+        reason: "admin_exists",
+      };
+    }
+
+    if (!env.adminPassword) {
+      throw new AppError(
+        "ADMIN_PASSWORD is required to seed the initial admin account",
+        500
+      );
+    }
+
+    const [existingEmailUser, existingPhoneUser] = await Promise.all([
+      userRepository.findByEmail(env.adminEmail),
+      userRepository.findByPhone(env.adminPhone),
+    ]);
+
+    if (existingEmailUser) {
+      throw new AppError(
+        `Cannot seed admin because ${env.adminEmail} is already assigned to another account`,
+        409
+      );
+    }
+
+    if (existingPhoneUser) {
+      throw new AppError(
+        `Cannot seed admin because ${env.adminPhone} is already assigned to another account`,
+        409
+      );
+    }
+
+    const hashedPassword = await bcrypt.hash(env.adminPassword, 10);
+
+    let admin;
+
+    try {
+      admin = await userRepository.create({
+        name: env.adminName,
+        email: env.adminEmail,
+        phone: env.adminPhone,
+        password: hashedPassword,
+        role: ROLES.ADMIN,
+        status: "active",
+        workerStatus: "not_applicable",
+      });
+    } catch (error) {
+      if (error?.code === 11000) {
+        const adminCountAfterConflict = await userRepository.count({ role: ROLES.ADMIN });
+
+        if (adminCountAfterConflict > 0) {
+          return {
+            status: "skipped",
+            reason: "admin_exists",
+          };
+        }
+      }
+
+      throw error;
+    }
+
+    return {
+      status: "created",
+      adminId: String(admin._id),
+      email: admin.email,
     };
   }
 
@@ -89,11 +165,26 @@ class AdminService {
       filter.workerStatus = query.status;
     }
 
+    if (query.skill) {
+      filter.skills = query.skill;
+    }
+
     return userRepository.listWorkers(filter, {
       ...pagination,
       sort: { createdAt: -1 },
       select: "-password",
     });
+  }
+
+  async getWorkerFilters() {
+    const skills = await userRepository.model.distinct("skills", {
+      role: ROLES.WORKER,
+      skills: { $exists: true, $ne: [] },
+    });
+
+    return {
+      skills: skills.filter(Boolean).sort((left, right) => left.localeCompare(right)),
+    };
   }
 
   async getWorkerById(workerId) {
@@ -107,7 +198,19 @@ class AdminService {
 
   async updateWorkerStatus(workerId, workerStatus) {
     const worker = await this.getWorkerById(workerId);
-    return userRepository.updateById(worker._id, { workerStatus });
+    await userRepository.updateById(worker._id, { workerStatus });
+    return this.getWorkerById(worker._id);
+  }
+
+  async updateWorkerAccountStatus(workerId, status) {
+    const worker = await this.getWorkerById(workerId);
+
+    if (!USER_STATUSES.includes(status)) {
+      throw new AppError("Invalid worker account status", 400);
+    }
+
+    await userRepository.updateById(worker._id, { status });
+    return this.getWorkerById(worker._id);
   }
 
   async listCustomers(query = {}) {

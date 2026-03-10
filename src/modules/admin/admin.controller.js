@@ -11,6 +11,11 @@ class AdminController {
     res.json({ success: true, ...result });
   }
 
+  async getWorkerFilters(req, res) {
+    const filters = await adminService.getWorkerFilters();
+    res.json({ success: true, data: filters });
+  }
+
   async getWorkerById(req, res) {
     const worker = await adminService.getWorkerById(req.params.workerId);
     res.json({ success: true, data: worker });
@@ -24,6 +29,14 @@ class AdminController {
   async rejectWorker(req, res) {
     const worker = await adminService.updateWorkerStatus(req.params.workerId, "rejected");
     res.json({ success: true, message: "Worker rejected", data: worker });
+  }
+
+  async updateWorkerAccountStatus(req, res) {
+    const worker = await adminService.updateWorkerAccountStatus(
+      req.params.workerId,
+      req.body.status
+    );
+    res.json({ success: true, message: "Worker account status updated", data: worker });
   }
 
   async listCustomers(req, res) {

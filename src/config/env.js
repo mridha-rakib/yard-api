@@ -8,8 +8,11 @@ const cleanValue = (value, fallback = "") => {
   return String(value).trim().replace(/^['"]|['"]$/g, "");
 };
 
+const resolvedNodeEnv = cleanValue(process.env.NODE_ENV, "development");
+const defaultAdminPassword = resolvedNodeEnv === "production" ? "" : "Admin@12345";
+
 const env = {
-  nodeEnv: cleanValue(process.env.NODE_ENV, "development"),
+  nodeEnv: resolvedNodeEnv,
   port: Number(cleanValue(process.env.PORT, 5000)),
   apiPrefix: cleanValue(process.env.API_PREFIX, "/api/v1"),
   logLevel: cleanValue(process.env.LOG_LEVEL, "info"),
@@ -33,6 +36,10 @@ const env = {
   defaultPlatformFeePercentage: Number(
     cleanValue(process.env.DEFAULT_PLATFORM_FEE_PERCENTAGE, 12)
   ),
+  adminName: cleanValue(process.env.ADMIN_NAME, "John Administrator"),
+  adminEmail: cleanValue(process.env.ADMIN_EMAIL, "admin@yardworkpro.com").toLowerCase(),
+  adminPhone: cleanValue(process.env.ADMIN_PHONE, "+15550000001"),
+  adminPassword: cleanValue(process.env.ADMIN_PASSWORD, defaultAdminPassword),
 };
 
 module.exports = env;

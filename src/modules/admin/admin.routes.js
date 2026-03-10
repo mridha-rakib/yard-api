@@ -10,9 +10,14 @@ router.use(authenticate, authorize(ROLES.ADMIN));
 
 router.get("/dashboard", asyncHandler(adminController.getDashboardStats));
 router.get("/workers", asyncHandler(adminController.listWorkers));
+router.get("/workers/meta", asyncHandler(adminController.getWorkerFilters));
 router.get("/workers/:workerId", asyncHandler(adminController.getWorkerById));
 router.patch("/workers/:workerId/approve", asyncHandler(adminController.approveWorker));
 router.patch("/workers/:workerId/reject", asyncHandler(adminController.rejectWorker));
+router.patch(
+  "/workers/:workerId/account-status",
+  asyncHandler(adminController.updateWorkerAccountStatus)
+);
 router.get("/customers", asyncHandler(adminController.listCustomers));
 router.get("/customers/:customerId", asyncHandler(adminController.getCustomerById));
 router.get("/bookings", asyncHandler(adminController.listBookings));
