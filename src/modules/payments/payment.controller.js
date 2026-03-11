@@ -10,6 +10,18 @@ class PaymentController {
     });
   }
 
+  async getCheckoutSessionStatus(req, res) {
+    const result = await paymentService.getCheckoutSessionStatus(
+      req.user,
+      req.params.sessionId
+    );
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  }
+
   async listPayments(req, res) {
     const result = await paymentService.listPayments(req.user, req.query);
     res.json({ success: true, ...result });

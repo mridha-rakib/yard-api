@@ -1,3 +1,4 @@
+const bcrypt = require("bcryptjs");
 const AppError = require("../../errors/AppError");
 const sanitizeUser = require("../../utils/sanitizeUser");
 const userRepository = require("./user.repository");
@@ -88,6 +89,45 @@ class UserService {
     }
 
     return sanitizeUser(user);
+  }
+
+  async changePassword(user, payload) {
+    const currentPassword = String(payload.currentPassword || "");
+    const newPassword = String(payload.newPassword || "");
+
+    if (!currentPassword || !newPassword) {
+      throw new AppError("Current password and new password are required", 400);
+    }
+
+    if (newPassword.length < 8) {
+      throw new AppError("New password must be at least 8 characters", 400);
+    }
+
+    const existingUser = await userRepository.findById(user._id);
+
+    if (!existingUser) {
+      throw new AppError("User not found", 404);
+    }
+
+    const passwordMatched = await bcrypt.compare(currentPassword, existingUser.password);
+
+    if (!passwordMatched) {
+      throw new AppError("Current password is incorrect", 401);
+    }
+
+    const nextPasswordMatchesCurrent = await bcrypt.compare(newPassword, existingUser.password);
+
+    if (nextPasswordMatchesCurrent) {
+      throw new AppError("New password must be different from the current password", 400);
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await userRepository.updateById(user._id, {
+      password: hashedPassword,
+    });
+
+    return { success: true };
   }
 }
 

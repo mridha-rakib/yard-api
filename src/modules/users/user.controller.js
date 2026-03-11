@@ -15,6 +15,14 @@ class UserController {
     const user = await userService.getUserById(req.user, req.params.userId);
     res.json({ success: true, data: user });
   }
+
+  async changePassword(req, res) {
+    await userService.changePassword(req.user, req.body);
+    res.json({
+      success: true,
+      message: "Password updated successfully",
+    });
+  }
 }
 
 module.exports = new UserController();

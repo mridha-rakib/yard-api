@@ -1,6 +1,9 @@
 const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const { ROLES } = require("../../constants/roles");
+const bookingRepository = require("../bookings/booking.repository");
+const bookingService = require("../bookings/booking.service");
+const paymentRepository = require("../payments/payment.repository");
 const jobRepository = require("./job.repository");
 
 class JobService {
@@ -138,6 +141,54 @@ class JobService {
     return filter;
   }
 
+  async attachOperationalDetails(items = []) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return items;
+    }
+
+    const jobIds = items.map((item) => item?._id).filter(Boolean);
+
+    if (jobIds.length === 0) {
+      return items;
+    }
+
+    const [bookings, payments] = await Promise.all([
+      bookingRepository.findMany(
+        { job: { $in: jobIds } },
+        {
+          lean: true,
+          select: "job status scheduledDate scheduledTime startedAt completedAt createdAt",
+        }
+      ),
+      paymentRepository.findMany(
+        { job: { $in: jobIds } },
+        {
+          lean: true,
+          select:
+            "job amount currency status platformFee platformFeePercentage workerPayout paidAt createdAt",
+        }
+      ),
+    ]);
+
+    const bookingsByJobId = new Map(
+      bookings.map((booking) => [String(booking.job), booking])
+    );
+    const paymentsByJobId = new Map(
+      payments.map((payment) => [String(payment.job), payment])
+    );
+
+    return items.map((item) => {
+      const normalizedItem = item?.toObject ? item.toObject() : item;
+      const jobId = String(normalizedItem._id);
+
+      return {
+        ...normalizedItem,
+        booking: bookingsByJobId.get(jobId) || null,
+        payment: paymentsByJobId.get(jobId) || null,
+      };
+    });
+  }
+
   async listJobs(requestingUser, query = {}) {
     const pagination = buildPagination(query);
     const filter = this.buildQueryFilter(query);
@@ -158,10 +209,15 @@ class JobService {
       ];
     }
 
-    return jobRepository.findManyWithRelations(filter, {
+    const result = await jobRepository.findManyWithRelations(filter, {
       ...pagination,
       sort: { createdAt: -1 },
     });
+
+    return {
+      ...result,
+      items: await this.attachOperationalDetails(result.items),
+    };
   }
 
   async listAvailableJobs(worker, query = {}) {
@@ -187,10 +243,15 @@ class JobService {
       ];
     }
 
-    return jobRepository.findManyWithRelations(filter, {
+    const result = await jobRepository.findManyWithRelations(filter, {
       ...pagination,
       sort: { createdAt: -1 },
     });
+
+    return {
+      ...result,
+      items: await this.attachOperationalDetails(result.items),
+    };
   }
 
   async listMyJobs(user, query = {}) {
@@ -215,6 +276,7 @@ class JobService {
 
     return {
       ...result,
+      items: await this.attachOperationalDetails(result.items),
       summary: {
         new: newCount,
         assigned: assignedCount,
@@ -241,7 +303,18 @@ class JobService {
       throw new AppError("You do not have access to this job", 403);
     }
 
-    return job;
+    const [enrichedJob] = await this.attachOperationalDetails([job]);
+    return enrichedJob;
+  }
+
+  async acceptJob(worker, jobId) {
+    const booking = await bookingService.acceptAvailableJob(worker, jobId);
+    const job = await this.getJobById(worker, jobId);
+
+    return {
+      job,
+      booking,
+    };
   }
 
   async updateJob(user, jobId, payload) {

@@ -6,6 +6,34 @@ class JobRepository extends BaseRepository {
     super(Job);
   }
 
+  claimAvailableJob(jobId, workerId) {
+    return this.updateOne(
+      {
+        _id: jobId,
+        status: "new",
+        assignedWorker: null,
+      },
+      {
+        assignedWorker: workerId,
+        status: "assigned",
+      }
+    );
+  }
+
+  releaseClaimedJob(jobId, workerId) {
+    return this.updateOne(
+      {
+        _id: jobId,
+        assignedWorker: workerId,
+        status: "assigned",
+      },
+      {
+        assignedWorker: null,
+        status: "new",
+      }
+    );
+  }
+
   findJobWithRelations(jobId) {
     return this.findById(jobId, {
       populate: [

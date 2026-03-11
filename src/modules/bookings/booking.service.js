@@ -56,6 +56,58 @@ class BookingService {
     return bookingRepository.findBookingWithRelations(booking._id);
   }
 
+  async acceptAvailableJob(worker, jobId) {
+    if (worker.role !== ROLES.WORKER) {
+      throw new AppError("Only workers can accept jobs", 403);
+    }
+
+    if (worker.workerStatus !== "approved") {
+      throw new AppError("Your worker account is awaiting approval", 403);
+    }
+
+    const claimedJob = await jobRepository.claimAvailableJob(jobId, worker._id);
+
+    if (!claimedJob) {
+      const existingJob = await jobRepository.findById(jobId);
+
+      if (!existingJob) {
+        throw new AppError("Job not found", 404);
+      }
+
+      throw new AppError("This job has already been accepted by another worker", 409);
+    }
+
+    try {
+      const booking = await bookingRepository.create({
+        job: claimedJob._id,
+        customer: claimedJob.customer,
+        worker: worker._id,
+        scheduledDate: claimedJob.preferredDate || null,
+        scheduledTime: claimedJob.preferredTime || "",
+        notes: "Created when the worker accepted the job",
+        status: "assigned",
+      });
+
+      const relatedPayment = await paymentRepository.findByJob(claimedJob._id);
+      if (relatedPayment) {
+        await paymentRepository.updateById(relatedPayment._id, {
+          booking: booking._id,
+          worker: worker._id,
+        });
+      }
+
+      return bookingRepository.findBookingWithRelations(booking._id);
+    } catch (error) {
+      await jobRepository.releaseClaimedJob(claimedJob._id, worker._id);
+
+      if (error?.code === 11000) {
+        throw new AppError("This job has already been accepted by another worker", 409);
+      }
+
+      throw error;
+    }
+  }
+
   async getBookingById(user, bookingId) {
     const booking = await bookingRepository.findBookingWithRelations(bookingId);
 

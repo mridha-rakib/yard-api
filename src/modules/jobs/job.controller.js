@@ -30,6 +30,15 @@ class JobController {
     res.json({ success: true, data: job });
   }
 
+  async acceptJob(req, res) {
+    const assignment = await jobService.acceptJob(req.user, req.params.jobId);
+    res.status(201).json({
+      success: true,
+      message: "Job accepted successfully",
+      data: assignment,
+    });
+  }
+
   async updateJob(req, res) {
     const job = await jobService.updateJob(req.user, req.params.jobId, req.body);
     res.json({

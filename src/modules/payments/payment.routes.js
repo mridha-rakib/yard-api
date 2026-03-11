@@ -8,11 +8,16 @@ const router = express.Router();
 
 router.use(authenticate);
 router.get("/", asyncHandler(paymentController.listPayments));
-router.get("/:paymentId", asyncHandler(paymentController.getPaymentById));
+router.get(
+  "/checkout/session/:sessionId",
+  authorize(ROLES.CUSTOMER, ROLES.ADMIN),
+  asyncHandler(paymentController.getCheckoutSessionStatus)
+);
 router.post(
   "/checkout/job-request",
   authorize(ROLES.CUSTOMER, ROLES.ADMIN),
   asyncHandler(paymentController.createCheckoutSession)
 );
+router.get("/:paymentId", asyncHandler(paymentController.getPaymentById));
 
 module.exports = router;

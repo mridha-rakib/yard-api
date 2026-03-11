@@ -18,6 +18,12 @@ router.get(
   asyncHandler(jobController.listAvailableJobs)
 );
 router.get("/my", authenticate, asyncHandler(jobController.listMyJobs));
+router.post(
+  "/:jobId/accept",
+  authenticate,
+  authorize(ROLES.WORKER),
+  asyncHandler(jobController.acceptJob)
+);
 router.get("/:jobId", optionalAuthenticate, asyncHandler(jobController.getJobById));
 router.post(
   "/",

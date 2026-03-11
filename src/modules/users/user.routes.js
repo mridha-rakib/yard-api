@@ -7,6 +7,7 @@ const router = express.Router();
 
 router.get("/profile", authenticate, asyncHandler(userController.getProfile));
 router.patch("/profile", authenticate, asyncHandler(userController.updateProfile));
+router.patch("/profile/password", authenticate, asyncHandler(userController.changePassword));
 router.get("/:userId", authenticate, asyncHandler(userController.getUserById));
 
 module.exports = router;
