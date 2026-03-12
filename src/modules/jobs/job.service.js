@@ -157,7 +157,8 @@ class JobService {
         { job: { $in: jobIds } },
         {
           lean: true,
-          select: "job status scheduledDate scheduledTime startedAt completedAt createdAt",
+          select:
+            "job status scheduledDate scheduledTime notes cancelReason startedAt completedAt cancelledAt createdAt",
         }
       ),
       paymentRepository.findMany(

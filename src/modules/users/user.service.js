@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const AppError = require("../../errors/AppError");
 const sanitizeUser = require("../../utils/sanitizeUser");
+const { normalizeTimeValue } = require("../../utils/time");
 const userRepository = require("./user.repository");
 
 class UserService {
@@ -16,6 +17,16 @@ class UserService {
 
   async updateProfile(user, payload) {
     const update = {};
+    const nextStartTime =
+      payload.startTime ??
+      payload.availability?.startTime ??
+      user.availability?.startTime ??
+      "";
+    const nextEndTime =
+      payload.endTime ??
+      payload.availability?.endTime ??
+      user.availability?.endTime ??
+      "";
 
     if (payload.name !== undefined) update.name = payload.name;
     if (payload.phone !== undefined) update.phone = payload.phone;
@@ -47,16 +58,8 @@ class UserService {
         payload.availability?.days ??
         user.availability?.days ??
         [],
-      startTime:
-        payload.startTime ??
-        payload.availability?.startTime ??
-        user.availability?.startTime ??
-        "",
-      endTime:
-        payload.endTime ??
-        payload.availability?.endTime ??
-        user.availability?.endTime ??
-        "",
+      startTime: normalizeTimeValue(nextStartTime, "Start time"),
+      endTime: normalizeTimeValue(nextEndTime, "End time"),
     };
 
     if (payload.email && payload.email !== user.email) {

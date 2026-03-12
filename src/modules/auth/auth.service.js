@@ -5,6 +5,7 @@ const env = require("../../config/env");
 const AppError = require("../../errors/AppError");
 const hashToken = require("../../utils/hashToken");
 const sanitizeUser = require("../../utils/sanitizeUser");
+const { normalizeTimeValue } = require("../../utils/time");
 const { ROLES } = require("../../constants/roles");
 const authSessionRepository = require("./auth-session.repository");
 const userRepository = require("../users/user.repository");
@@ -255,8 +256,8 @@ class AuthService {
       availability: {
         label: availabilityLabel || availability || "",
         days: availableDays,
-        startTime,
-        endTime,
+        startTime: normalizeTimeValue(startTime, "Start time"),
+        endTime: normalizeTimeValue(endTime, "End time"),
       },
       profilePhotoUrl,
       idDocumentUrl,

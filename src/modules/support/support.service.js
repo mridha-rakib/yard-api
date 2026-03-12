@@ -46,6 +46,7 @@ class SupportService {
         { subject: { $regex: query.search, $options: "i" } },
         { requesterName: { $regex: query.search, $options: "i" } },
         { requesterEmail: { $regex: query.search, $options: "i" } },
+        { "messages.message": { $regex: query.search, $options: "i" } },
       ];
     }
 
@@ -93,6 +94,8 @@ class SupportService {
 
     if (user.role === ROLES.ADMIN && conversation.status === "open") {
       conversation.status = "in_progress";
+    } else if (user.role !== ROLES.ADMIN && conversation.status !== "open") {
+      conversation.status = "open";
     }
 
     conversation.lastMessageAt = new Date();

@@ -38,6 +38,135 @@ const DEFAULT_SERVICE_PRICES = {
 const DEFAULT_BOOKING_AMOUNT = 45;
 
 class PaymentService {
+  normalizeStatusFilter(status = "") {
+    const normalizedStatus = String(status).trim().toLowerCase();
+
+    if (!normalizedStatus || normalizedStatus === "all" || normalizedStatus === "all status") {
+      return "";
+    }
+
+    if (normalizedStatus === "completed") {
+      return "paid";
+    }
+
+    return normalizedStatus;
+  }
+
+  normalizePaymentMethodFilter(paymentMethod = "") {
+    const normalizedMethod = String(paymentMethod).trim().toLowerCase();
+
+    if (
+      !normalizedMethod ||
+      normalizedMethod === "all" ||
+      normalizedMethod === "payment method"
+    ) {
+      return "";
+    }
+
+    const methodMap = {
+      card: "card",
+      "credit card": "card",
+      paypal: "paypal",
+      cash: "cash",
+      bank_transfer: "bank_transfer",
+      "bank transfer": "bank_transfer",
+    };
+
+    return methodMap[normalizedMethod] || normalizedMethod;
+  }
+
+  getPaymentTimestamp(payment) {
+    return payment?.paidAt || payment?.createdAt || null;
+  }
+
+  getDateRangeStart(dateRange = "") {
+    const normalizedRange = String(dateRange).trim().toLowerCase();
+    const daysByRange = {
+      last_7_days: 7,
+      "last 7 days": 7,
+      last_30_days: 30,
+      "last 30 days": 30,
+      last_3_months: 90,
+      "last 3 months": 90,
+      last_year: 365,
+      "last year": 365,
+    };
+
+    const days = daysByRange[normalizedRange];
+
+    if (!days) {
+      return null;
+    }
+
+    const startDate = new Date();
+    startDate.setHours(0, 0, 0, 0);
+    startDate.setDate(startDate.getDate() - (days - 1));
+
+    return startDate;
+  }
+
+  matchesSearch(payment, search = "") {
+    const normalizedSearch = String(search).trim().toLowerCase();
+
+    if (!normalizedSearch) {
+      return true;
+    }
+
+    const searchableValues = [
+      payment?._id,
+      payment?.job?._id,
+      payment?.job?.title,
+      payment?.job?.serviceType,
+      payment?.worker?.name,
+      payment?.worker?.email,
+      payment?.customer?.name,
+      payment?.customer?.email,
+      payment?.description,
+    ]
+      .filter(Boolean)
+      .map((value) => String(value).toLowerCase());
+
+    return searchableValues.some((value) => value.includes(normalizedSearch));
+  }
+
+  matchesDateRange(payment, dateRange = "") {
+    const startDate = this.getDateRangeStart(dateRange);
+
+    if (!startDate) {
+      return true;
+    }
+
+    const paymentTimestamp = this.getPaymentTimestamp(payment);
+
+    if (!paymentTimestamp) {
+      return false;
+    }
+
+    return new Date(paymentTimestamp) >= startDate;
+  }
+
+  buildPaymentsSummary(items = []) {
+    const paidPayments = items
+      .filter((payment) => payment?.status === "paid")
+      .sort(
+        (left, right) =>
+          new Date(this.getPaymentTimestamp(right) || 0).getTime() -
+          new Date(this.getPaymentTimestamp(left) || 0).getTime()
+      );
+
+    const latestPaidPayment = paidPayments[0] || null;
+
+    return {
+      totalPaid: paidPayments.reduce((sum, payment) => sum + Number(payment?.amount || 0), 0),
+      pendingPayments: items
+        .filter((payment) => payment?.status === "pending")
+        .reduce((sum, payment) => sum + Number(payment?.amount || 0), 0),
+      lastPaymentAmount: Number(latestPaidPayment?.amount || 0),
+      lastPaymentDate: this.getPaymentTimestamp(latestPaidPayment),
+      totalCount: items.length,
+    };
+  }
+
   getStripeClient() {
     if (!env.stripeSecretKey) {
       throw new AppError("Stripe is not configured", 500);
@@ -214,13 +343,21 @@ class PaymentService {
   async listPayments(user, query = {}) {
     const pagination = buildPagination(query);
     const filter = {};
+    const normalizedStatus = this.normalizeStatusFilter(query.status);
+    const normalizedPaymentMethod = this.normalizePaymentMethodFilter(
+      query.paymentMethod || query.method
+    );
 
-    if (query.status) {
-      filter.status = query.status;
+    if (normalizedStatus) {
+      filter.status = normalizedStatus;
     }
 
     if (query.gateway) {
       filter.gateway = query.gateway;
+    }
+
+    if (normalizedPaymentMethod) {
+      filter.paymentMethod = normalizedPaymentMethod;
     }
 
     if (user.role === ROLES.CUSTOMER) {
@@ -229,10 +366,31 @@ class PaymentService {
       filter.worker = user._id;
     }
 
-    return paymentRepository.paginateWithRelations(filter, {
-      ...pagination,
+    const items = await paymentRepository.findMany(filter, {
+      populate: paymentRepository.buildRelationsPopulate(),
       sort: { createdAt: -1 },
+      lean: true,
     });
+
+    const filteredItems = items.filter(
+      (payment) =>
+        this.matchesSearch(payment, query.search) &&
+        this.matchesDateRange(payment, query.dateRange)
+    );
+
+    const startIndex = (pagination.page - 1) * pagination.limit;
+    const paginatedItems = filteredItems.slice(startIndex, startIndex + pagination.limit);
+
+    return {
+      items: paginatedItems,
+      pagination: {
+        page: pagination.page,
+        limit: pagination.limit,
+        total: filteredItems.length,
+        totalPages: Math.ceil(filteredItems.length / pagination.limit) || 1,
+      },
+      summary: this.buildPaymentsSummary(filteredItems),
+    };
   }
 
   async getPaymentById(user, paymentId) {

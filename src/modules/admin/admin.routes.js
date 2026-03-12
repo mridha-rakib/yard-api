@@ -21,6 +21,7 @@ router.patch(
 router.get("/customers", asyncHandler(adminController.listCustomers));
 router.get("/customers/:customerId", asyncHandler(adminController.getCustomerById));
 router.get("/bookings", asyncHandler(adminController.listBookings));
+router.get("/bookings/:jobId", asyncHandler(adminController.getBookingById));
 router.patch("/bookings/:bookingId/status", asyncHandler(adminController.updateBookingStatus));
 router.get("/payments", asyncHandler(adminController.listPayments));
 router.get("/support", asyncHandler(adminController.listSupportConversations));

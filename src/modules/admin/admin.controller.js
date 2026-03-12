@@ -54,6 +54,11 @@ class AdminController {
     res.json({ success: true, ...result });
   }
 
+  async getBookingById(req, res) {
+    const booking = await adminService.getBookingById(req.user, req.params.jobId);
+    res.json({ success: true, data: booking });
+  }
+
   async updateBookingStatus(req, res) {
     const booking = await adminService.updateBookingStatus(
       req.user,
@@ -74,12 +79,12 @@ class AdminController {
   }
 
   async getSettings(req, res) {
-    const settings = await adminService.getSettings();
+    const settings = await adminService.getSettings(req.user._id);
     res.json({ success: true, data: settings });
   }
 
   async updateSettings(req, res) {
-    const settings = await adminService.updateSettings(req.body);
+    const settings = await adminService.updateSettings(req.user, req.body);
     res.json({ success: true, message: "Settings updated", data: settings });
   }
 }
