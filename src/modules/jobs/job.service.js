@@ -166,7 +166,7 @@ class JobService {
         {
           lean: true,
           select:
-            "job amount currency status platformFee platformFeePercentage workerPayout paidAt createdAt",
+            "job amount currency status platformFee platformFeePercentage workerPayout paidAt authorizedAt authorizationExpiresAt captureAttemptedAt lastCaptureError createdAt",
         }
       ),
     ]);

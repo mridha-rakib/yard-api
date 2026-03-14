@@ -3,6 +3,7 @@ const env = require("./config/env");
 const logger = require("./config/logger");
 const connectDb = require("./config/db");
 const adminService = require("./modules/admin/admin.service");
+const paymentService = require("./modules/payments/payment.service");
 
 const startServer = async () => {
   try {
@@ -17,6 +18,7 @@ const startServer = async () => {
 
     app.listen(env.port, () => {
       logger.info(`Server running on port ${env.port}`);
+      paymentService.startBackgroundRepairLoop();
     });
   } catch (error) {
     logger.error({ err: error }, "Failed to start server");

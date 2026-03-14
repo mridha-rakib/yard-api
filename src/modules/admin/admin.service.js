@@ -471,7 +471,7 @@ class AdminService {
                 },
                 outstandingBalance: {
                   $sum: {
-                    $cond: [{ $eq: ["$status", "pending"] }, "$amount", 0],
+                    $cond: [{ $in: ["$status", ["pending", "authorized"]] }, "$amount", 0],
                   },
                 },
                 lastPaymentAt: {
@@ -626,7 +626,7 @@ class AdminService {
               },
               outstandingBalance: {
                 $sum: {
-                  $cond: [{ $eq: ["$status", "pending"] }, "$amount", 0],
+                  $cond: [{ $in: ["$status", ["pending", "authorized"]] }, "$amount", 0],
                 },
               },
               lastPaymentAt: {

@@ -15,6 +15,13 @@ const jobSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    sourcePayment: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Payment",
+      default: null,
+      index: true,
+      sparse: true,
+    },
     title: {
       type: String,
       required: true,
@@ -127,5 +134,7 @@ const jobSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+jobSchema.index({ sourcePayment: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model("Job", jobSchema);

@@ -85,6 +85,30 @@ const paymentSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    stripeCustomerId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripePaymentMethodId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeLastEventId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeLastEventType: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeLastSyncedAt: {
+      type: Date,
+      default: null,
+    },
     checkoutUrl: {
       type: String,
       trim: true,
@@ -97,6 +121,37 @@ const paymentSchema = new mongoose.Schema(
     paidAt: {
       type: Date,
       default: null,
+    },
+    authorizedAt: {
+      type: Date,
+      default: null,
+    },
+    authorizationExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    captureAttemptedAt: {
+      type: Date,
+      default: null,
+    },
+    lastCaptureError: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    reconciliationLockedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    lastRepairAttemptAt: {
+      type: Date,
+      default: null,
+    },
+    lastRepairError: {
+      type: String,
+      trim: true,
+      default: "",
     },
   },
   { timestamps: true }

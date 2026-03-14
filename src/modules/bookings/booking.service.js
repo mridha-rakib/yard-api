@@ -182,7 +182,19 @@ class BookingService {
       status: "completed",
     });
 
-    return bookingRepository.findBookingWithRelations(updatedBooking._id);
+    const refreshedBooking = await bookingRepository.findBookingWithRelations(updatedBooking._id);
+    const paymentService = require("../payments/payment.service");
+    const paymentCapture = await paymentService.captureAuthorizedPaymentForBooking(
+      refreshedBooking,
+      {
+        completedByUserId: String(user._id),
+      }
+    );
+
+    return {
+      booking: refreshedBooking,
+      paymentCapture,
+    };
   }
 
   async cancelBooking(user, bookingId, reason = "") {

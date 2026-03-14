@@ -31,8 +31,16 @@ class BookingController {
   }
 
   async completeBooking(req, res) {
-    const booking = await bookingService.completeBooking(req.user, req.params.bookingId);
-    res.json({ success: true, message: "Booking completed", data: booking });
+    const result = await bookingService.completeBooking(req.user, req.params.bookingId);
+    const captureStatus = result?.paymentCapture?.status || "";
+    const message =
+      captureStatus === "failed" || captureStatus === "payment_not_found"
+        ? "Booking completed, but payment needs review"
+        : ["paid", "already_paid"].includes(captureStatus)
+          ? "Booking completed and payment captured"
+          : "Booking completed";
+
+    res.json({ success: true, message, data: result });
   }
 
   async cancelBooking(req, res) {

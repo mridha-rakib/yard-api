@@ -36,8 +36,14 @@ const DEFAULT_SERVICE_PRICES = {
   "home-patio-sweeping": 35,
 };
 const DEFAULT_BOOKING_AMOUNT = 45;
+const RECONCILIATION_LOCK_TIMEOUT_MS = 60 * 1000;
 
 class PaymentService {
+  constructor() {
+    this.repairIntervalHandle = null;
+    this.repairRunInProgress = false;
+  }
+
   normalizeStatusFilter(status = "") {
     const normalizedStatus = String(status).trim().toLowerCase();
 
@@ -159,7 +165,7 @@ class PaymentService {
     return {
       totalPaid: paidPayments.reduce((sum, payment) => sum + Number(payment?.amount || 0), 0),
       pendingPayments: items
-        .filter((payment) => payment?.status === "pending")
+        .filter((payment) => ["pending", "authorized"].includes(payment?.status))
         .reduce((sum, payment) => sum + Number(payment?.amount || 0), 0),
       lastPaymentAmount: Number(latestPaidPayment?.amount || 0),
       lastPaymentDate: this.getPaymentTimestamp(latestPaidPayment),
@@ -258,6 +264,388 @@ class PaymentService {
     };
   }
 
+  buildStripeSyncUpdate(context = {}, extra = {}, timestamp = new Date()) {
+    const update = {
+      stripeLastSyncedAt: timestamp,
+      ...extra,
+    };
+
+    if (context.stripeEventId) {
+      update.stripeLastEventId = context.stripeEventId;
+    }
+
+    if (context.stripeEventType) {
+      update.stripeLastEventType = context.stripeEventType;
+    }
+
+    if (context.source === "background_repair") {
+      update.lastRepairAttemptAt = timestamp;
+    }
+
+    return update;
+  }
+
+  normalizeRepairErrorMessage(error) {
+    return String(error?.message || error || "Unknown Stripe repair error").slice(0, 500);
+  }
+
+  isStripeRepairEnabled() {
+    return Boolean(env.stripeRepairEnabled && env.stripeSecretKey);
+  }
+
+  getRepairIntervalMs() {
+    return Math.max(5000, Number(env.stripeRepairIntervalMs) || 30000);
+  }
+
+  getRepairBatchSize() {
+    return Math.max(1, Number(env.stripeRepairBatchSize) || 10);
+  }
+
+  getRepairMinAgeMs() {
+    return Math.max(0, Number(env.stripeRepairMinAgeMs) || 0);
+  }
+
+  getStripeCaptureExpiry(paymentIntent) {
+    const captureBefore =
+      paymentIntent?.latest_charge?.payment_method_details?.card?.capture_before || null;
+
+    if (!captureBefore) {
+      return null;
+    }
+
+    const parsedDate = new Date(Number(captureBefore) * 1000);
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+  }
+
+  async retrievePaymentIntent(paymentIntentId) {
+    if (!paymentIntentId) {
+      return null;
+    }
+
+    return this.getStripeClient().paymentIntents.retrieve(paymentIntentId, {
+      expand: ["latest_charge"],
+    });
+  }
+
+  async findOrCreateJobForPayment(payment, { paymentStatus = "pending", isPaid = false } = {}) {
+    if (payment?.job) {
+      const existingJob = await jobRepository.findById(payment.job);
+
+      if (existingJob) {
+        return existingJob;
+      }
+    }
+
+    const existingSourceJob = await jobRepository.findOne({
+      sourcePayment: payment._id,
+    });
+
+    if (existingSourceJob) {
+      return existingSourceJob;
+    }
+
+    const draftJob = payment?.metadata?.draftJob;
+
+    if (!draftJob) {
+      throw new AppError("Draft job payload is missing from payment metadata", 500);
+    }
+
+    try {
+      return await jobRepository.create({
+        ...draftJob,
+        sourcePayment: payment._id,
+        isPaid,
+        paymentStatus,
+        status: "new",
+      });
+    } catch (error) {
+      if (error?.code === 11000) {
+        const createdJob = await jobRepository.findOne({
+          sourcePayment: payment._id,
+        });
+
+        if (createdJob) {
+          return createdJob;
+        }
+      }
+
+      throw error;
+    }
+  }
+
+  async syncJobPaymentState(jobId, { paymentStatus, isPaid }) {
+    if (!jobId) {
+      return null;
+    }
+
+    return jobRepository.updateById(jobId, {
+      paymentStatus,
+      isPaid,
+    });
+  }
+
+  async reconcileAuthorizedCheckoutSession(payment, session, paymentIntent, context = {}) {
+    const lock = await paymentRepository.acquireReconciliationLock(
+      payment._id,
+      new Date(Date.now() - RECONCILIATION_LOCK_TIMEOUT_MS)
+    );
+
+    if (!lock) {
+      return {
+        status: "locked",
+        paymentId: String(payment._id),
+        sessionId: session.id,
+      };
+    }
+
+    const syncedAt = new Date();
+
+    try {
+      const latestPayment = await paymentRepository.findById(payment._id);
+
+      if (!latestPayment) {
+        return {
+          status: "payment_not_found",
+          paymentId: String(payment._id),
+          sessionId: session.id,
+        };
+      }
+
+      if (latestPayment.status === "paid") {
+        return {
+          status: "already_paid",
+          paymentId: String(latestPayment._id),
+          jobId: String(latestPayment.job || ""),
+          sessionId: session.id,
+        };
+      }
+
+      const ensuredJob = await this.findOrCreateJobForPayment(latestPayment, {
+        paymentStatus: "authorized",
+        isPaid: false,
+      });
+      const jobId = ensuredJob?._id || latestPayment.job || null;
+
+      await this.syncJobPaymentState(jobId, {
+        paymentStatus: "authorized",
+        isPaid: false,
+      });
+
+      const updatedPayment = await paymentRepository.updateById(
+        latestPayment._id,
+        this.buildStripeSyncUpdate(
+          context,
+          {
+            job: jobId,
+            status: "authorized",
+            authorizedAt: latestPayment.authorizedAt || syncedAt,
+            authorizationExpiresAt:
+              this.getStripeCaptureExpiry(paymentIntent) ||
+              latestPayment.authorizationExpiresAt ||
+              null,
+            stripePaymentIntentId:
+              paymentIntent?.id ||
+              session.payment_intent ||
+              latestPayment.stripePaymentIntentId ||
+              "",
+            stripeCustomerId:
+              paymentIntent?.customer || session.customer || latestPayment.stripeCustomerId || "",
+            stripePaymentMethodId:
+              paymentIntent?.payment_method || latestPayment.stripePaymentMethodId || "",
+            paymentMethod:
+              latestPayment.paymentMethod && latestPayment.paymentMethod !== "unknown"
+                ? latestPayment.paymentMethod
+                : "card",
+            lastRepairError: "",
+            lastCaptureError: "",
+          },
+          syncedAt
+        )
+      );
+
+      return {
+        status:
+          latestPayment.status === "authorized" && latestPayment.job
+            ? "already_authorized"
+            : "authorized",
+        paymentId: String(updatedPayment._id),
+        jobId: String(jobId),
+        sessionId: session.id,
+      };
+    } finally {
+      await paymentRepository.releaseReconciliationLock(payment._id);
+    }
+  }
+
+  async reconcilePaidCheckoutSession(payment, session, paymentIntent = null, context = {}) {
+    const lock = await paymentRepository.acquireReconciliationLock(
+      payment._id,
+      new Date(Date.now() - RECONCILIATION_LOCK_TIMEOUT_MS)
+    );
+
+    if (!lock) {
+      return {
+        status: "locked",
+        paymentId: String(payment._id),
+        sessionId: session?.id || "",
+      };
+    }
+
+    const syncedAt = new Date();
+
+    try {
+      const latestPayment = await paymentRepository.findById(payment._id);
+
+      if (!latestPayment) {
+        return {
+          status: "payment_not_found",
+          paymentId: String(payment._id),
+          sessionId: session?.id || "",
+        };
+      }
+
+      const ensuredJob = await this.findOrCreateJobForPayment(latestPayment, {
+        paymentStatus: "paid",
+        isPaid: true,
+      });
+      const jobId = ensuredJob?._id || latestPayment.job || null;
+
+      await this.syncJobPaymentState(jobId, {
+        paymentStatus: "paid",
+        isPaid: true,
+      });
+
+      const updatedPayment = await paymentRepository.updateById(
+        latestPayment._id,
+        this.buildStripeSyncUpdate(
+          context,
+          {
+            job: jobId,
+            status: "paid",
+            paidAt: latestPayment.paidAt || syncedAt,
+            authorizedAt: latestPayment.authorizedAt || syncedAt,
+            authorizationExpiresAt:
+              this.getStripeCaptureExpiry(paymentIntent) ||
+              latestPayment.authorizationExpiresAt ||
+              null,
+            captureAttemptedAt: latestPayment.captureAttemptedAt || syncedAt,
+            stripePaymentIntentId:
+              paymentIntent?.id ||
+              session?.payment_intent ||
+              latestPayment.stripePaymentIntentId ||
+              "",
+            stripeCustomerId:
+              paymentIntent?.customer ||
+              session?.customer ||
+              latestPayment.stripeCustomerId ||
+              "",
+            stripePaymentMethodId:
+              paymentIntent?.payment_method || latestPayment.stripePaymentMethodId || "",
+            paymentMethod:
+              latestPayment.paymentMethod && latestPayment.paymentMethod !== "unknown"
+                ? latestPayment.paymentMethod
+                : "card",
+            lastRepairError: "",
+            lastCaptureError: "",
+          },
+          syncedAt
+        )
+      );
+
+      return {
+        status:
+          latestPayment.status === "paid" && latestPayment.job ? "already_paid" : "paid",
+        paymentId: String(updatedPayment._id),
+        jobId: String(jobId),
+        sessionId: session?.id || "",
+      };
+    } finally {
+      await paymentRepository.releaseReconciliationLock(payment._id);
+    }
+  }
+
+  async reconcileCheckoutSession(session, context = {}) {
+    if (!session?.id) {
+      throw new AppError("Stripe checkout session id is required for reconciliation", 500);
+    }
+
+    const payment = await paymentRepository.findBySessionId(session.id);
+
+    if (!payment) {
+      logger.warn({ sessionId: session.id }, "Stripe checkout session has no local payment record");
+
+      return {
+        status: "payment_not_found",
+        sessionId: session.id,
+      };
+    }
+
+    let paymentIntent = null;
+
+    if (session.payment_intent) {
+      try {
+        paymentIntent = await this.retrievePaymentIntent(session.payment_intent);
+      } catch (error) {
+        logger.warn(
+          {
+            err: error,
+            sessionId: session.id,
+            paymentIntentId: session.payment_intent,
+          },
+          "Unable to retrieve Stripe payment intent while reconciling checkout session"
+        );
+      }
+    }
+
+    if (paymentIntent?.status === "requires_capture") {
+      return this.reconcileAuthorizedCheckoutSession(payment, session, paymentIntent, context);
+    }
+
+    if (paymentIntent?.status === "succeeded") {
+      return this.reconcilePaidCheckoutSession(payment, session, paymentIntent, context);
+    }
+
+    if (session.status === "expired") {
+      const syncedAt = new Date();
+      const cancelledPayment = await paymentRepository.updateOne(
+        { _id: payment._id, status: "pending" },
+        this.buildStripeSyncUpdate(
+          context,
+          {
+            status: "cancelled",
+            lastRepairError: "",
+          },
+          syncedAt
+        )
+      );
+
+      return {
+        status: cancelledPayment ? "cancelled" : payment.status,
+        paymentId: String(payment._id),
+        sessionId: session.id,
+      };
+    }
+
+    if (context.source === "background_repair") {
+      await paymentRepository.updateById(
+        payment._id,
+        this.buildStripeSyncUpdate(
+          context,
+          {
+            lastRepairError: "",
+          },
+          new Date()
+        )
+      );
+    }
+
+    return {
+      status: payment.status,
+      paymentId: String(payment._id),
+      sessionId: session.id,
+    };
+  }
+
   async createJobCheckoutSession(user, payload) {
     if (![ROLES.CUSTOMER, ROLES.ADMIN].includes(user.role)) {
       throw new AppError("Only customers and admins can create checkout sessions", 403);
@@ -296,7 +684,16 @@ class PaymentService {
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
+      customer_creation: "always",
+      customer_email: normalizedJobDraft.email,
       payment_method_types: ["card"],
+      payment_intent_data: {
+        capture_method: "manual",
+        setup_future_usage: "off_session",
+        metadata: {
+          paymentRecordId: String(paymentRecord._id),
+        },
+      },
       line_items: [
         {
           price_data: {
@@ -314,6 +711,7 @@ class PaymentService {
       cancel_url: cancelUrl,
       metadata: {
         paymentRecordId: String(paymentRecord._id),
+        paymentFlow: "authorize_then_capture",
       },
     });
 
@@ -417,7 +815,7 @@ class PaymentService {
       throw new AppError("Checkout session id is required", 400);
     }
 
-    const payment = await paymentRepository.findBySessionIdWithRelations(sessionId);
+    let payment = await paymentRepository.findBySessionIdWithRelations(sessionId);
 
     if (!payment) {
       throw new AppError("Checkout session not found", 404);
@@ -427,6 +825,14 @@ class PaymentService {
 
     const stripe = this.getStripeClient();
     const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (payment.status !== "paid") {
+      await this.reconcileCheckoutSession(session, {
+        source: "status_check",
+      });
+
+      payment = await paymentRepository.findBySessionIdWithRelations(sessionId);
+    }
 
     return {
       payment,
@@ -440,6 +846,290 @@ class PaymentService {
           session.customer_details?.email || payment.metadata?.draftJob?.email || "",
       },
     };
+  }
+
+  async captureAuthorizedPaymentForBooking(booking, context = {}) {
+    const bookingId = booking?._id || booking;
+    const jobId = booking?.job?._id || booking?.job || null;
+    const payment = await paymentRepository.findOne({
+      $or: [
+        ...(bookingId ? [{ booking: bookingId }] : []),
+        ...(jobId ? [{ job: jobId }] : []),
+      ],
+    });
+
+    if (!payment) {
+      return {
+        status: "payment_not_found",
+        bookingId: String(bookingId || ""),
+        jobId: String(jobId || ""),
+      };
+    }
+
+    if (payment.status === "paid") {
+      return {
+        status: "already_paid",
+        paymentId: String(payment._id),
+        bookingId: String(bookingId || ""),
+        jobId: String(jobId || payment.job || ""),
+      };
+    }
+
+    const stripe = this.getStripeClient();
+    const attemptedAt = new Date();
+
+    try {
+      let paymentIntent = payment.stripePaymentIntentId
+        ? await stripe.paymentIntents.retrieve(payment.stripePaymentIntentId, {
+            expand: ["latest_charge"],
+          })
+        : null;
+
+      if (paymentIntent?.status === "requires_capture") {
+        paymentIntent = await stripe.paymentIntents.capture(paymentIntent.id);
+        paymentIntent = await stripe.paymentIntents.retrieve(paymentIntent.id, {
+          expand: ["latest_charge"],
+        });
+
+        return this.reconcilePaidCheckoutSession(
+          payment,
+          {
+            id: payment.stripeCheckoutSessionId || `capture_${payment._id}`,
+            payment_intent: paymentIntent.id,
+            customer: paymentIntent.customer || payment.stripeCustomerId || "",
+          },
+          paymentIntent,
+          {
+            ...context,
+            source: "booking_completion",
+          }
+        );
+      }
+
+      if (paymentIntent?.status === "succeeded") {
+        return this.reconcilePaidCheckoutSession(
+          payment,
+          {
+            id: payment.stripeCheckoutSessionId || `capture_${payment._id}`,
+            payment_intent: paymentIntent.id,
+            customer: paymentIntent.customer || payment.stripeCustomerId || "",
+          },
+          paymentIntent,
+          {
+            ...context,
+            source: "booking_completion",
+          }
+        );
+      }
+
+      if (payment.stripeCustomerId && payment.stripePaymentMethodId) {
+        paymentIntent = await stripe.paymentIntents.create(
+          {
+            amount: Math.round(Number(payment.amount || 0) * 100),
+            currency: String(payment.currency || "usd").toLowerCase(),
+            customer: payment.stripeCustomerId,
+            payment_method: payment.stripePaymentMethodId,
+            confirm: true,
+            off_session: true,
+            description: payment.description || "Yard Heroes completion charge",
+            metadata: {
+              paymentRecordId: String(payment._id),
+              bookingId: String(bookingId || ""),
+              jobId: String(jobId || payment.job || ""),
+              paymentFlow: "authorize_then_capture_fallback",
+            },
+          },
+          {
+            idempotencyKey: `payment_capture_${payment._id}_${bookingId || jobId || "job"}`,
+          }
+        );
+
+        paymentIntent = await stripe.paymentIntents.retrieve(paymentIntent.id, {
+          expand: ["latest_charge"],
+        });
+
+        return this.reconcilePaidCheckoutSession(
+          payment,
+          {
+            id: payment.stripeCheckoutSessionId || `fallback_${payment._id}`,
+            payment_intent: paymentIntent.id,
+            customer: paymentIntent.customer || payment.stripeCustomerId || "",
+          },
+          paymentIntent,
+          {
+            ...context,
+            source: "booking_completion",
+          }
+        );
+      }
+
+      throw new AppError("No usable Stripe authorization or saved payment method was found", 409);
+    } catch (error) {
+      await paymentRepository.updateById(payment._id, {
+        status: "failed",
+        captureAttemptedAt: attemptedAt,
+        lastCaptureError: this.normalizeRepairErrorMessage(error),
+      });
+
+      await this.syncJobPaymentState(jobId || payment.job, {
+        paymentStatus: "failed",
+        isPaid: false,
+      });
+
+      logger.error(
+        {
+          err: error,
+          paymentId: payment._id,
+          bookingId,
+          jobId: jobId || payment.job,
+        },
+        "Stripe payment capture failed after booking completion"
+      );
+
+      return {
+        status: "failed",
+        paymentId: String(payment._id),
+        bookingId: String(bookingId || ""),
+        jobId: String(jobId || payment.job || ""),
+        errorMessage: this.normalizeRepairErrorMessage(error),
+      };
+    }
+  }
+
+  async repairPendingStripePayments() {
+    if (!this.isStripeRepairEnabled()) {
+      return {
+        enabled: false,
+        scanned: 0,
+        repaired: 0,
+        cancelled: 0,
+        pending: 0,
+        failed: 0,
+        locked: 0,
+      };
+    }
+
+    const candidates = await paymentRepository.findPendingStripePaymentsForRepair(
+      new Date(Date.now() - this.getRepairMinAgeMs()),
+      this.getRepairBatchSize()
+    );
+
+    if (!candidates.length) {
+      return {
+        enabled: true,
+        scanned: 0,
+        repaired: 0,
+        cancelled: 0,
+        pending: 0,
+        failed: 0,
+        locked: 0,
+      };
+    }
+
+    const stripe = this.getStripeClient();
+    const summary = {
+      enabled: true,
+      scanned: candidates.length,
+      repaired: 0,
+      cancelled: 0,
+      pending: 0,
+      failed: 0,
+      locked: 0,
+    };
+
+    for (const payment of candidates) {
+      try {
+        const session = await stripe.checkout.sessions.retrieve(payment.stripeCheckoutSessionId);
+        const result = await this.reconcileCheckoutSession(session, {
+          source: "background_repair",
+        });
+
+        if (["authorized", "already_authorized", "paid", "already_paid"].includes(result.status)) {
+          summary.repaired += 1;
+          continue;
+        }
+
+        if (result.status === "cancelled") {
+          summary.cancelled += 1;
+          continue;
+        }
+
+        if (result.status === "locked") {
+          summary.locked += 1;
+          continue;
+        }
+
+        summary.pending += 1;
+      } catch (error) {
+        summary.failed += 1;
+
+        await paymentRepository.updateById(payment._id, {
+          lastRepairAttemptAt: new Date(),
+          lastRepairError: this.normalizeRepairErrorMessage(error),
+        });
+
+        logger.warn(
+          {
+            err: error,
+            paymentId: payment._id,
+            sessionId: payment.stripeCheckoutSessionId,
+          },
+          "Stripe payment repair attempt failed"
+        );
+      }
+    }
+
+    return summary;
+  }
+
+  startBackgroundRepairLoop() {
+    if (!this.isStripeRepairEnabled()) {
+      logger.info("Stripe background repair loop is disabled");
+      return;
+    }
+
+    if (this.repairIntervalHandle) {
+      return;
+    }
+
+    const runRepairPass = async (trigger) => {
+      if (this.repairRunInProgress) {
+        return;
+      }
+
+      this.repairRunInProgress = true;
+
+      try {
+        const summary = await this.repairPendingStripePayments();
+
+        if (summary.scanned > 0 || summary.failed > 0 || trigger === "startup") {
+          logger.info({ trigger, ...summary }, "Stripe payment repair pass completed");
+        }
+      } catch (error) {
+        logger.error({ err: error, trigger }, "Stripe payment repair pass failed");
+      } finally {
+        this.repairRunInProgress = false;
+      }
+    };
+
+    const startupTimeout = setTimeout(() => {
+      runRepairPass("startup");
+    }, Math.max(0, Number(env.stripeRepairStartupDelayMs) || 0));
+    startupTimeout.unref?.();
+
+    this.repairIntervalHandle = setInterval(() => {
+      runRepairPass("interval");
+    }, this.getRepairIntervalMs());
+    this.repairIntervalHandle.unref?.();
+
+    logger.info(
+      {
+        intervalMs: this.getRepairIntervalMs(),
+        batchSize: this.getRepairBatchSize(),
+        minAgeMs: this.getRepairMinAgeMs(),
+      },
+      "Stripe background repair loop started"
+    );
   }
 
   async handleStripeWebhook(rawBody, signature) {
@@ -459,47 +1149,48 @@ class PaymentService {
     }
 
     if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      const payment = await paymentRepository.findBySessionId(session.id);
-
-      if (payment && payment.status !== "paid") {
-        const draftJob = payment.metadata?.draftJob;
-
-        if (!draftJob) {
-          throw new AppError("Draft job payload is missing from payment metadata", 500);
-        }
-
-        const createdJob = await jobRepository.create({
-          ...draftJob,
-          isPaid: true,
-          paymentStatus: "paid",
-          status: "new",
-        });
-
-        await paymentRepository.updateById(payment._id, {
-          job: createdJob._id,
-          status: "paid",
-          paidAt: new Date(),
-          stripePaymentIntentId: session.payment_intent || "",
-          paymentMethod: "card",
-        });
-      }
+      await this.reconcileCheckoutSession(event.data.object, {
+        source: "webhook",
+        stripeEventId: event.id,
+        stripeEventType: event.type,
+      });
     }
 
     if (event.type === "payment_intent.payment_failed") {
       const paymentIntent = event.data.object;
-      await paymentRepository.updateOne(
+      const failedPayment = await paymentRepository.updateOne(
         { stripePaymentIntentId: paymentIntent.id },
-        { status: "failed" }
+        this.buildStripeSyncUpdate(
+          {
+            source: "webhook",
+            stripeEventId: event.id,
+            stripeEventType: event.type,
+          },
+          {
+            status: "failed",
+            captureAttemptedAt: new Date(),
+            lastCaptureError: this.normalizeRepairErrorMessage(
+              paymentIntent?.last_payment_error?.message || "Stripe payment failed"
+            ),
+          },
+          new Date()
+        )
       );
+
+      if (failedPayment?.job) {
+        await this.syncJobPaymentState(failedPayment.job, {
+          paymentStatus: "failed",
+          isPaid: false,
+        });
+      }
     }
 
     if (event.type === "checkout.session.expired") {
-      const session = event.data.object;
-      await paymentRepository.updateOne(
-        { stripeCheckoutSessionId: session.id, status: "pending" },
-        { status: "cancelled" }
-      );
+      await this.reconcileCheckoutSession(event.data.object, {
+        source: "webhook",
+        stripeEventId: event.id,
+        stripeEventType: event.type,
+      });
     }
 
     return { received: true };

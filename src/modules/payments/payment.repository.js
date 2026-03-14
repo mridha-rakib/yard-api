@@ -41,6 +41,45 @@ class PaymentRepository extends BaseRepository {
     );
   }
 
+  findPendingStripePaymentsForRepair(cutoffDate, limit = 10) {
+    return this.model
+      .find({
+        status: "pending",
+        gateway: "stripe",
+        stripeCheckoutSessionId: { $exists: true, $ne: "" },
+        createdAt: { $lte: cutoffDate },
+      })
+      .sort({ createdAt: 1 })
+      .limit(limit);
+  }
+
+  acquireReconciliationLock(paymentId, staleBefore) {
+    return this.model.findOneAndUpdate(
+      {
+        _id: paymentId,
+        $or: [
+          { reconciliationLockedAt: null },
+          { reconciliationLockedAt: { $lt: staleBefore } },
+        ],
+      },
+      {
+        reconciliationLockedAt: new Date(),
+      },
+      {
+        new: true,
+        runValidators: true,
+      }
+    );
+  }
+
+  releaseReconciliationLock(paymentId) {
+    return this.model.findByIdAndUpdate(
+      paymentId,
+      { reconciliationLockedAt: null },
+      { new: true, runValidators: true }
+    );
+  }
+
   findByJob(jobId) {
     return this.findOne({ job: jobId });
   }
