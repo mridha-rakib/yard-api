@@ -1,7 +1,9 @@
 const bcrypt = require("bcryptjs");
 const AppError = require("../../errors/AppError");
+const authSessionRepository = require("../auth/auth-session.repository");
 const sanitizeUser = require("../../utils/sanitizeUser");
 const { normalizeTimeValue } = require("../../utils/time");
+const { ROLES } = require("../../constants/roles");
 const userRepository = require("./user.repository");
 
 class UserService {
@@ -68,6 +70,10 @@ class UserService {
         throw new AppError("Email is already in use", 409);
       }
       update.email = payload.email.toLowerCase();
+
+      if (user.role !== ROLES.ADMIN) {
+        update.emailVerifiedAt = null;
+      }
     }
 
     if (payload.phone && payload.phone !== user.phone) {
@@ -94,7 +100,7 @@ class UserService {
     return sanitizeUser(user);
   }
 
-  async changePassword(user, payload) {
+  async changePassword(user, payload, sessionId = "") {
     const currentPassword = String(payload.currentPassword || "");
     const newPassword = String(payload.newPassword || "");
 
@@ -129,6 +135,21 @@ class UserService {
     await userRepository.updateById(user._id, {
       password: hashedPassword,
     });
+
+    if (sessionId) {
+      await authSessionRepository.updateMany(
+        {
+          user: user._id,
+          isRevoked: false,
+          _id: { $ne: sessionId },
+        },
+        {
+          isRevoked: true,
+          revokedAt: new Date(),
+          revokeReason: "password_changed",
+        }
+      );
+    }
 
     return { success: true };
   }

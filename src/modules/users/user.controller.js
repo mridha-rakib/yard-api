@@ -17,7 +17,7 @@ class UserController {
   }
 
   async changePassword(req, res) {
-    await userService.changePassword(req.user, req.body);
+    await userService.changePassword(req.user, req.body, req.auth?.sessionId || "");
     res.json({
       success: true,
       message: "Password updated successfully",

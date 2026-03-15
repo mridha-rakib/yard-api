@@ -31,6 +31,11 @@ class AdminController {
     res.json({ success: true, message: "Worker rejected", data: worker });
   }
 
+  async deleteWorker(req, res) {
+    const result = await adminService.deleteWorker(req.user, req.params.workerId);
+    res.json({ success: true, message: "Worker deleted", data: result });
+  }
+
   async updateWorkerAccountStatus(req, res) {
     const worker = await adminService.updateWorkerAccountStatus(
       req.params.workerId,
@@ -69,7 +74,7 @@ class AdminController {
   }
 
   async listPayments(req, res) {
-    const result = await adminService.listPayments(req.query);
+    const result = await adminService.listPayments(req.user, req.query);
     res.json({ success: true, ...result });
   }
 

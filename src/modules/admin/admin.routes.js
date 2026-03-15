@@ -14,6 +14,7 @@ router.get("/workers/meta", asyncHandler(adminController.getWorkerFilters));
 router.get("/workers/:workerId", asyncHandler(adminController.getWorkerById));
 router.patch("/workers/:workerId/approve", asyncHandler(adminController.approveWorker));
 router.patch("/workers/:workerId/reject", asyncHandler(adminController.rejectWorker));
+router.delete("/workers/:workerId", asyncHandler(adminController.deleteWorker));
 router.patch(
   "/workers/:workerId/account-status",
   asyncHandler(adminController.updateWorkerAccountStatus)

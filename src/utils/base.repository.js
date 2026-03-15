@@ -45,6 +45,18 @@ class BaseRepository {
     });
   }
 
+  deleteById(id, options = {}) {
+    return this.model.findByIdAndDelete(id, options);
+  }
+
+  deleteOne(filter, options = {}) {
+    return this.model.findOneAndDelete(filter, options);
+  }
+
+  deleteMany(filter = {}, options = {}) {
+    return this.model.deleteMany(filter, options);
+  }
+
   count(filter = {}) {
     return this.model.countDocuments(filter);
   }

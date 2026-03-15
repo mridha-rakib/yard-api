@@ -82,7 +82,26 @@ class PaymentService {
   }
 
   getPaymentTimestamp(payment) {
-    return payment?.paidAt || payment?.createdAt || null;
+    return payment?.paidAt || payment?.authorizedAt || payment?.createdAt || null;
+  }
+
+  isInCurrentMonth(value) {
+    if (!value) {
+      return false;
+    }
+
+    const parsedDate = new Date(value);
+
+    if (Number.isNaN(parsedDate.getTime())) {
+      return false;
+    }
+
+    const now = new Date();
+
+    return (
+      parsedDate.getUTCFullYear() === now.getUTCFullYear() &&
+      parsedDate.getUTCMonth() === now.getUTCMonth()
+    );
   }
 
   getDateRangeStart(dateRange = "") {
@@ -118,9 +137,16 @@ class PaymentService {
       return true;
     }
 
+    const paymentId = String(payment?._id || "");
+    const jobId = String(payment?.job?._id || "");
+    const shortPaymentId = paymentId ? `#pay-${paymentId.slice(-6)}` : "";
+    const shortJobId = jobId ? `#job-${jobId.slice(-6)}` : "";
+
     const searchableValues = [
-      payment?._id,
-      payment?.job?._id,
+      paymentId,
+      jobId,
+      shortPaymentId,
+      shortJobId,
       payment?.job?.title,
       payment?.job?.serviceType,
       payment?.worker?.name,
@@ -133,6 +159,22 @@ class PaymentService {
       .map((value) => String(value).toLowerCase());
 
     return searchableValues.some((value) => value.includes(normalizedSearch));
+  }
+
+  matchesSpecificDate(payment, exactDate = "") {
+    const normalizedDate = String(exactDate).trim();
+
+    if (!normalizedDate) {
+      return true;
+    }
+
+    const paymentTimestamp = this.getPaymentTimestamp(payment);
+
+    if (!paymentTimestamp) {
+      return false;
+    }
+
+    return new Date(paymentTimestamp).toISOString().slice(0, 10) === normalizedDate;
   }
 
   matchesDateRange(payment, dateRange = "") {
@@ -152,21 +194,52 @@ class PaymentService {
   }
 
   buildPaymentsSummary(items = []) {
-    const paidPayments = items
-      .filter((payment) => payment?.status === "paid")
-      .sort(
-        (left, right) =>
-          new Date(this.getPaymentTimestamp(right) || 0).getTime() -
-          new Date(this.getPaymentTimestamp(left) || 0).getTime()
-      );
-
+    const sortedPayments = [...items].sort(
+      (left, right) =>
+        new Date(this.getPaymentTimestamp(right) || 0).getTime() -
+        new Date(this.getPaymentTimestamp(left) || 0).getTime()
+    );
+    const paidPayments = sortedPayments.filter((payment) => payment?.status === "paid");
+    const earningEligiblePayments = sortedPayments.filter((payment) =>
+      ["paid", "authorized", "pending"].includes(payment?.status)
+    );
+    const pendingPayments = items.filter((payment) =>
+      ["pending", "authorized"].includes(payment?.status)
+    );
+    const currentMonthPayments = earningEligiblePayments.filter((payment) =>
+      this.isInCurrentMonth(this.getPaymentTimestamp(payment))
+    );
     const latestPaidPayment = paidPayments[0] || null;
 
     return {
+      totalAmount: items.reduce((sum, payment) => sum + Number(payment?.amount || 0), 0),
       totalPaid: paidPayments.reduce((sum, payment) => sum + Number(payment?.amount || 0), 0),
-      pendingPayments: items
-        .filter((payment) => ["pending", "authorized"].includes(payment?.status))
-        .reduce((sum, payment) => sum + Number(payment?.amount || 0), 0),
+      totalPlatformFee: items.reduce(
+        (sum, payment) => sum + Number(payment?.platformFee || 0),
+        0
+      ),
+      totalWorkerPayout: items.reduce(
+        (sum, payment) => sum + Number(payment?.workerPayout || 0),
+        0
+      ),
+      totalPaidWorkerPayout: paidPayments.reduce(
+        (sum, payment) => sum + Number(payment?.workerPayout || 0),
+        0
+      ),
+      pendingWorkerPayout: pendingPayments.reduce(
+        (sum, payment) => sum + Number(payment?.workerPayout || 0),
+        0
+      ),
+      currentMonthWorkerPayout: currentMonthPayments.reduce(
+        (sum, payment) => sum + Number(payment?.workerPayout || 0),
+        0
+      ),
+      pendingPayments: pendingPayments.reduce(
+        (sum, payment) => sum + Number(payment?.amount || 0),
+        0
+      ),
+      pendingCount: pendingPayments.length,
+      paidCount: paidPayments.length,
       lastPaymentAmount: Number(latestPaidPayment?.amount || 0),
       lastPaymentDate: this.getPaymentTimestamp(latestPaidPayment),
       totalCount: items.length,
@@ -773,6 +846,7 @@ class PaymentService {
     const filteredItems = items.filter(
       (payment) =>
         this.matchesSearch(payment, query.search) &&
+        this.matchesSpecificDate(payment, query.date) &&
         this.matchesDateRange(payment, query.dateRange)
     );
 

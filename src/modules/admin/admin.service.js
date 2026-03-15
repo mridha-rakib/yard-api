@@ -11,8 +11,11 @@ const jobService = require("../jobs/job.service");
 const bookingRepository = require("../bookings/booking.repository");
 const bookingService = require("../bookings/booking.service");
 const paymentRepository = require("../payments/payment.repository");
+const paymentService = require("../payments/payment.service");
+const applicationRepository = require("../applications/application.repository");
 const supportRepository = require("../support/support.repository");
 const contentRepository = require("../content/content.repository");
+const authSessionRepository = require("../auth/auth-session.repository");
 
 const DEFAULT_PLATFORM_SETTINGS = {
   name: "Yard Heroes",
@@ -60,6 +63,13 @@ const DEFAULT_LEGAL_DOCS = [
 ];
 
 class AdminService {
+  getVisibleUsersFilter(filter = {}) {
+    return {
+      isDeleted: { $ne: true },
+      ...filter,
+    };
+  }
+
   buildSearchFilter(query = {}, fields = []) {
     if (!query.search) {
       return {};
@@ -141,7 +151,7 @@ class AdminService {
   }
 
   async getAdminProfile(adminUserId) {
-    const adminUser = await userRepository.findById(adminUserId, {
+    const adminUser = await userRepository.findOne(this.getVisibleUsersFilter({ _id: adminUserId }), {
       select: "name email phone profilePhotoUrl lastLoginAt role status",
       lean: true,
     });
@@ -199,6 +209,7 @@ class AdminService {
         email: env.adminEmail,
         phone: env.adminPhone,
         password: hashedPassword,
+        emailVerifiedAt: new Date(),
         role: ROLES.ADMIN,
         status: "active",
         workerStatus: "not_applicable",
@@ -247,7 +258,7 @@ class AdminService {
 
   async getDashboardRecentWorkerApplications(limit = 5) {
     return userRepository.model
-      .find({ role: ROLES.WORKER })
+      .find(this.getVisibleUsersFilter({ role: ROLES.WORKER }))
       .sort({ createdAt: -1 })
       .limit(limit)
       .select("name email workerStatus status location profilePhotoUrl createdAt")
@@ -271,12 +282,18 @@ class AdminService {
       recentBookings,
       recentWorkerApplications,
     ] = await Promise.all([
-      userRepository.count({}),
-      userRepository.count({ role: "worker" }),
-      userRepository.count({ role: "worker", workerStatus: "approved", status: "active" }),
-      userRepository.count({ role: "worker", workerStatus: "pending" }),
-      userRepository.count({ role: "customer" }),
-      userRepository.count({ role: "customer", status: "active" }),
+      userRepository.count(this.getVisibleUsersFilter({})),
+      userRepository.count(this.getVisibleUsersFilter({ role: "worker" })),
+      userRepository.count(
+        this.getVisibleUsersFilter({
+          role: "worker",
+          workerStatus: "approved",
+          status: "active",
+        })
+      ),
+      userRepository.count(this.getVisibleUsersFilter({ role: "worker", workerStatus: "pending" })),
+      userRepository.count(this.getVisibleUsersFilter({ role: "customer" })),
+      userRepository.count(this.getVisibleUsersFilter({ role: "customer", status: "active" })),
       jobRepository.count({}),
       jobRepository.count({ status: "new", assignedWorker: null }),
       bookingRepository.count({}),
@@ -329,9 +346,9 @@ class AdminService {
 
   async listWorkers(query = {}) {
     const pagination = buildPagination(query);
-    const filter = {
+    const filter = this.getVisibleUsersFilter({
       ...this.buildSearchFilter(query, ["name", "email", "phone"]),
-    };
+    });
 
     if (query.status) {
       filter.workerStatus = query.status;
@@ -350,6 +367,7 @@ class AdminService {
 
   async getWorkerFilters() {
     const skills = await userRepository.model.distinct("skills", {
+      isDeleted: { $ne: true },
       role: ROLES.WORKER,
       skills: { $exists: true, $ne: [] },
     });
@@ -360,7 +378,9 @@ class AdminService {
   }
 
   async getWorkerById(workerId) {
-    const worker = await userRepository.findById(workerId, { select: "-password" });
+    const worker = await userRepository.findOne(this.getVisibleUsersFilter({ _id: workerId }), {
+      select: "-password",
+    });
     if (!worker || worker.role !== "worker") {
       throw new AppError("Worker not found", 404);
     }
@@ -383,6 +403,122 @@ class AdminService {
 
     await userRepository.updateById(worker._id, { status });
     return this.getWorkerById(worker._id);
+  }
+
+  async deleteWorker(adminUser, workerId) {
+    if (adminUser.role !== ROLES.ADMIN) {
+      throw new AppError("Only admins can delete workers", 403);
+    }
+
+    const worker = await this.getWorkerById(workerId);
+    const [inProgressJobs, inProgressBookings, assignedJobs, assignedBookings] = await Promise.all([
+      jobRepository.findMany(
+        { assignedWorker: worker._id, status: "in_progress" },
+        { lean: true, select: "_id" }
+      ),
+      bookingRepository.findMany(
+        { worker: worker._id, status: "in_progress" },
+        { lean: true, select: "_id" }
+      ),
+      jobRepository.findMany(
+        { assignedWorker: worker._id, status: "assigned" },
+        { lean: true, select: "_id" }
+      ),
+      bookingRepository.findMany(
+        { worker: worker._id, status: "assigned" },
+        { lean: true, select: "_id job" }
+      ),
+    ]);
+
+    if (inProgressJobs.length || inProgressBookings.length) {
+      throw new AppError(
+        "This worker has work in progress. Complete or cancel those bookings before deleting the profile.",
+        409
+      );
+    }
+
+    const assignedBookingIds = assignedBookings.map((booking) => booking._id);
+    const assignedJobIds = [...new Set(
+      [...assignedJobs.map((job) => job._id), ...assignedBookings.map((booking) => booking.job)].filter(
+        Boolean
+      )
+    )];
+    const now = new Date();
+    const deletionReason = "Worker profile deleted by admin";
+    const replacementPasswordHash = await bcrypt.hash(
+      `deleted-worker-${worker._id}-${Date.now()}`,
+      10
+    );
+
+    if (assignedBookingIds.length > 0) {
+      await Promise.all([
+        bookingRepository.updateMany(
+          { _id: { $in: assignedBookingIds } },
+          {
+            status: "cancelled",
+            cancelReason: deletionReason,
+            cancelledAt: now,
+          }
+        ),
+        jobRepository.updateMany(
+          { _id: { $in: assignedJobIds } },
+          {
+            assignedWorker: null,
+            status: "new",
+            cancelReason: deletionReason,
+          }
+        ),
+        paymentRepository.updateMany(
+          {
+            $or: [
+              { booking: { $in: assignedBookingIds } },
+              { job: { $in: assignedJobIds }, worker: worker._id },
+            ],
+          },
+          {
+            booking: null,
+            worker: null,
+          }
+        ),
+      ]);
+    }
+
+    await Promise.all([
+      applicationRepository.deleteMany({ worker: worker._id }),
+      authSessionRepository.revokeAllByUser(worker._id, "admin_worker_delete"),
+      userRepository.updateById(worker._id, {
+        $set: {
+          name: "Deleted Worker",
+          email: `deleted-worker-${String(worker._id).toLowerCase()}@yardheroes.local`,
+          phone: `deleted-${String(worker._id)}`,
+          password: replacementPasswordHash,
+          status: "inactive",
+          workerStatus: "rejected",
+          skills: [],
+          profilePhotoUrl: "",
+          idDocumentUrl: "",
+          isDeleted: true,
+          deletedAt: now,
+          deletedBy: adminUser._id,
+          lastLoginAt: null,
+        },
+        $unset: {
+          age: 1,
+          location: 1,
+          availability: 1,
+        },
+      }),
+      supportRepository.updateMany(
+        { user: worker._id },
+        { user: null }
+      ),
+    ]);
+
+    return {
+      deletedWorkerId: String(worker._id),
+      reopenedJobs: assignedJobIds.length,
+      cancelledBookings: assignedBookingIds.length,
+    };
   }
 
   buildCustomerListFilter(query = {}) {
@@ -753,18 +889,8 @@ class AdminService {
     return bookingService.updateBookingStatusByAdmin(adminUser, bookingId, status);
   }
 
-  async listPayments(query = {}) {
-    const pagination = buildPagination(query);
-    const filter = {};
-
-    if (query.status) {
-      filter.status = query.status;
-    }
-
-    return paymentRepository.paginateWithRelations(filter, {
-      ...pagination,
-      sort: { createdAt: -1 },
-    });
+  async listPayments(adminUser, query = {}) {
+    return paymentService.listPayments(adminUser, query);
   }
 
   async listSupportConversations(query = {}) {

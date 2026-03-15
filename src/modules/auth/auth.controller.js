@@ -74,6 +74,55 @@ class AuthController {
       data: user,
     });
   }
+
+  async requestEmailVerificationCode(req, res) {
+    const result = await authService.requestEmailVerificationCode(req.user, req.body || {});
+    res.json({
+      success: true,
+      message: result.alreadyVerified
+        ? "Email is already verified"
+        : "Verification code sent successfully",
+      data: result,
+    });
+  }
+
+  async verifyEmailVerificationCode(req, res) {
+    const result = await authService.verifyEmailVerificationCode(req.user, req.body || {});
+    res.json({
+      success: true,
+      message: result.alreadyVerified
+        ? "Email is already verified"
+        : "Email verified successfully",
+      data: result,
+    });
+  }
+
+  async requestPasswordResetCode(req, res) {
+    const result = await authService.requestPasswordResetCode(req.body || {});
+    res.json({
+      success: true,
+      message: "If that email exists, a verification code has been sent",
+      data: result,
+    });
+  }
+
+  async verifyPasswordResetCode(req, res) {
+    const result = await authService.verifyPasswordResetCode(req.body || {});
+    res.json({
+      success: true,
+      message: "Verification code accepted",
+      data: result,
+    });
+  }
+
+  async resetPasswordWithToken(req, res) {
+    const result = await authService.resetPasswordWithToken(req.body || {});
+    res.json({
+      success: true,
+      message: "Password reset successfully",
+      data: result,
+    });
+  }
 }
 
 module.exports = new AuthController();
