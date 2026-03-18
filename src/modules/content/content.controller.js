@@ -6,6 +6,19 @@ class ContentController {
     res.json({ success: true, ...result });
   }
 
+  async listLegalDocuments(req, res) {
+    const documents = await contentService.listLegalDocuments(req.user?.role === "admin");
+    res.json({ success: true, data: documents });
+  }
+
+  async getLegalDocument(req, res) {
+    const document = await contentService.getLegalDocument(
+      req.params.documentId,
+      req.user?.role === "admin"
+    );
+    res.json({ success: true, data: document });
+  }
+
   async getContent(req, res) {
     const content = await contentService.getContentByKey(
       req.params.key,

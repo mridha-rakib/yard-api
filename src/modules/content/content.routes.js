@@ -11,6 +11,16 @@ const { ROLES } = require("../../constants/roles");
 const router = express.Router();
 
 router.get("/", authenticate, authorize(ROLES.ADMIN), asyncHandler(contentController.listContent));
+router.get(
+  "/legal-documents",
+  optionalAuthenticate,
+  asyncHandler(contentController.listLegalDocuments)
+);
+router.get(
+  "/legal-documents/:documentId",
+  optionalAuthenticate,
+  asyncHandler(contentController.getLegalDocument)
+);
 router.get("/:key", optionalAuthenticate, asyncHandler(contentController.getContent));
 router.patch(
   "/:key",

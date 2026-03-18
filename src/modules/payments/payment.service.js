@@ -4,6 +4,7 @@ const logger = require("../../config/logger");
 const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const { ROLES } = require("../../constants/roles");
+const { hasAnyRole, hasRole } = require("../../utils/user-roles");
 const paymentRepository = require("./payment.repository");
 const jobRepository = require("../jobs/job.repository");
 const jobService = require("../jobs/job.service");
@@ -720,7 +721,7 @@ class PaymentService {
   }
 
   async createJobCheckoutSession(user, payload) {
-    if (![ROLES.CUSTOMER, ROLES.ADMIN].includes(user.role)) {
+    if (!hasAnyRole(user, ROLES.CUSTOMER, ROLES.ADMIN)) {
       throw new AppError("Only customers and admins can create checkout sessions", 403);
     }
 
@@ -802,7 +803,7 @@ class PaymentService {
 
   assertPaymentAccess(user, payment) {
     const isAllowed =
-      user.role === ROLES.ADMIN ||
+      hasRole(user, ROLES.ADMIN) ||
       String(payment.customer?._id || payment.customer) === String(user._id) ||
       String(payment.worker?._id || payment.worker || "") === String(user._id);
 

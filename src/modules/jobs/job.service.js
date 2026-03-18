@@ -1,6 +1,7 @@
 const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const { ROLES } = require("../../constants/roles");
+const { hasAnyRole, hasRole } = require("../../utils/user-roles");
 const bookingRepository = require("../bookings/booking.repository");
 const bookingService = require("../bookings/booking.service");
 const paymentRepository = require("../payments/payment.repository");
@@ -57,7 +58,7 @@ class JobService {
       title: this.buildTitle(serviceType, payload.title),
       serviceType,
       fullName: payload.fullName || user.name,
-      phoneNumber: payload.phoneNumber || payload.phone || user.phone,
+      phoneNumber: payload.phoneNumber || payload.phone || "",
       email: payload.email || user.email,
       streetAddress: payload.streetAddress,
       city: payload.city,
@@ -94,7 +95,7 @@ class JobService {
   }
 
   async createJob(user, payload) {
-    if (![ROLES.CUSTOMER, ROLES.ADMIN].includes(user.role)) {
+    if (!hasAnyRole(user, ROLES.CUSTOMER, ROLES.ADMIN)) {
       throw new AppError("Only customers and admins can create jobs", 403);
     }
 
@@ -222,7 +223,7 @@ class JobService {
   }
 
   async listAvailableJobs(worker, query = {}) {
-    if (worker.role !== ROLES.WORKER) {
+    if (!hasRole(worker, ROLES.WORKER)) {
       throw new AppError("Only workers can view available jobs", 403);
     }
 
@@ -296,7 +297,7 @@ class JobService {
 
     if (
       requestingUser &&
-      requestingUser.role !== ROLES.ADMIN &&
+      !hasRole(requestingUser, ROLES.ADMIN) &&
       String(job.customer?._id || job.customer) !== String(requestingUser._id) &&
       String(job.assignedWorker?._id || job.assignedWorker || "") !== String(requestingUser._id) &&
       !(requestingUser.role === ROLES.WORKER && job.status === "new")
@@ -325,7 +326,7 @@ class JobService {
       throw new AppError("Job not found", 404);
     }
 
-    if (user.role !== ROLES.ADMIN && String(job.customer) !== String(user._id)) {
+    if (!hasRole(user, ROLES.ADMIN) && String(job.customer) !== String(user._id)) {
       throw new AppError("You do not have permission to update this job", 403);
     }
 
@@ -382,7 +383,7 @@ class JobService {
     }
 
     const isAllowed =
-      user.role === ROLES.ADMIN ||
+      hasRole(user, ROLES.ADMIN) ||
       String(job.customer) === String(user._id) ||
       String(job.assignedWorker || "") === String(user._id);
 

@@ -13,6 +13,13 @@ const emailService = require("../../services/email.service");
 const authSessionRepository = require("./auth-session.repository");
 const authOtpRepository = require("./auth-otp.repository");
 const userRepository = require("../users/user.repository");
+const {
+  getPrimaryRole,
+  getUserRoles,
+  hasAnyRole,
+  hasRole,
+  normalizeRoles,
+} = require("../../utils/user-roles");
 
 const EMAIL_VERIFICATION_PURPOSE = "verify_email";
 const PASSWORD_RESET_PURPOSE = "reset_password";
@@ -58,7 +65,7 @@ class AuthService {
   }
 
   isEmailVerificationRequired(user) {
-    return [ROLES.CUSTOMER, ROLES.WORKER].includes(user?.role);
+    return hasAnyRole(user, ROLES.CUSTOMER, ROLES.WORKER);
   }
 
   isEmailVerified(user) {
@@ -66,7 +73,7 @@ class AuthService {
       return false;
     }
 
-    if (user.role === ROLES.ADMIN) {
+    if (hasRole(user, ROLES.ADMIN)) {
       return true;
     }
 
@@ -99,6 +106,31 @@ class AuthService {
       },
       ...extra,
     };
+  }
+
+  async syncUserRoles(user) {
+    if (!user) {
+      return null;
+    }
+
+    const nextRoles = getUserRoles(user);
+    const nextRole = getPrimaryRole({
+      role: user.role,
+      roles: nextRoles,
+    });
+    const currentRoles = Array.isArray(user.roles) ? user.roles : [];
+    const rolesChanged =
+      currentRoles.length !== nextRoles.length ||
+      currentRoles.some((role, index) => role !== nextRoles[index]);
+
+    if (!rolesChanged && user.role === nextRole) {
+      return user;
+    }
+
+    return userRepository.updateById(user._id, {
+      role: nextRole,
+      roles: nextRoles,
+    });
   }
 
   async createSessionTokens(user, sessionMetadata = {}) {
@@ -184,7 +216,7 @@ class AuthService {
     }
 
     return {
-      user,
+      user: await this.syncUserRoles(user),
       session,
     };
   }
@@ -227,17 +259,18 @@ class AuthService {
     }
   }
 
-  async ensureUniqueIdentity(email, phone) {
+  async ensureUniqueIdentity(email, phone, options = {}) {
+    const excludedUserId = options.excludeUserId ? String(options.excludeUserId) : "";
     const [existingEmail, existingPhone] = await Promise.all([
-      userRepository.findByEmail(email),
-      userRepository.findByPhone(phone),
+      email ? userRepository.findByEmail(email) : null,
+      phone ? userRepository.findByPhone(phone) : null,
     ]);
 
-    if (existingEmail) {
+    if (existingEmail && String(existingEmail._id) !== excludedUserId) {
       throw new AppError("An account already exists with this email", 409);
     }
 
-    if (existingPhone) {
+    if (existingPhone && String(existingPhone._id) !== excludedUserId) {
       throw new AppError("An account already exists with this phone number", 409);
     }
   }
@@ -378,6 +411,7 @@ class AuthService {
       phone,
       password: hashedPassword,
       role: ROLES.CUSTOMER,
+      roles: normalizeRoles([ROLES.CUSTOMER]),
       workerStatus: "not_applicable",
       emailVerifiedAt: null,
     });
@@ -393,7 +427,7 @@ class AuthService {
     });
   }
 
-  async registerWorker(payload, sessionMetadata = {}) {
+  async registerWorker(payload, sessionMetadata = {}, currentUser = null) {
     const {
       fullName,
       name,
@@ -416,21 +450,43 @@ class AuthService {
       password,
     } = payload;
 
-    const resolvedName = fullName || name;
-    const resolvedPhone = phone || phoneNumber;
+    const existingUser = currentUser?._id ? await userRepository.findById(currentUser._id) : null;
+    const resolvedName = String(fullName || name || existingUser?.name || "").trim();
+    const normalizedEmail = this.normalizeEmail(email || existingUser?.email || "");
+    const resolvedPhone = String(phone || phoneNumber || existingUser?.phone || "").trim();
 
-    if (!resolvedName || !email || !resolvedPhone) {
+    if (!resolvedName || !normalizedEmail || !resolvedPhone) {
       throw new AppError("Name, email, and phone are required", 400);
     }
 
-    await this.ensureUniqueIdentity(this.normalizeEmail(email), resolvedPhone);
+    let user = null;
+    let generatedPassword = null;
 
-    const temporaryPassword =
-      password || `WorkerTemp#${Math.random().toString(36).slice(2, 10)}`;
+    if (existingUser) {
+      if (hasRole(existingUser, ROLES.ADMIN)) {
+        throw new AppError("Admin accounts cannot be converted into worker accounts", 403);
+      }
 
-    this.assertValidPassword(temporaryPassword);
+      if (normalizedEmail !== existingUser.email) {
+        throw new AppError(
+          "Use the same email address on your existing account to become a worker",
+          400
+        );
+      }
 
-    const hashedPassword = await bcrypt.hash(temporaryPassword, 10);
+      if (resolvedPhone !== existingUser.phone) {
+        throw new AppError(
+          "Use the same phone number on your existing account to become a worker",
+          400
+        );
+      }
+
+      await this.ensureUniqueIdentity(normalizedEmail, resolvedPhone, {
+        excludeUserId: existingUser._id,
+      });
+    } else {
+      await this.ensureUniqueIdentity(normalizedEmail, resolvedPhone);
+    }
 
     let parsedCity = city || "";
     let parsedZipCode = zipCode || "";
@@ -444,30 +500,66 @@ class AuthService {
       parsedZipCode = cityZipParts[1] || "";
     }
 
-    const user = await userRepository.create({
-      name: resolvedName,
-      email: this.normalizeEmail(email),
-      phone: resolvedPhone,
-      password: hashedPassword,
-      role: ROLES.WORKER,
-      workerStatus: "pending",
-      age,
-      skills,
-      location: {
-        city: parsedCity,
-        state: state || "",
-        zipCode: parsedZipCode || "",
-      },
-      availability: {
-        label: availabilityLabel || availability || "",
-        days: availableDays,
-        startTime: normalizeTimeValue(startTime, "Start time"),
-        endTime: normalizeTimeValue(endTime, "End time"),
-      },
-      profilePhotoUrl,
-      idDocumentUrl,
-      emailVerifiedAt: null,
-    });
+    if (existingUser) {
+      const nextRoles = normalizeRoles([...getUserRoles(existingUser), ROLES.WORKER]);
+
+      user = await userRepository.updateById(existingUser._id, {
+        name: resolvedName,
+        role: ROLES.WORKER,
+        roles: nextRoles,
+        workerStatus: existingUser.workerStatus === "approved" ? "approved" : "pending",
+        age,
+        skills,
+        location: {
+          ...(existingUser.location || {}),
+          city: parsedCity,
+          state: state || "",
+          zipCode: parsedZipCode || "",
+        },
+        availability: {
+          label: availabilityLabel || availability || "",
+          days: availableDays,
+          startTime: normalizeTimeValue(startTime, "Start time"),
+          endTime: normalizeTimeValue(endTime, "End time"),
+        },
+        profilePhotoUrl,
+        idDocumentUrl,
+      });
+    } else {
+      const temporaryPassword =
+        password || `WorkerTemp#${Math.random().toString(36).slice(2, 10)}`;
+
+      this.assertValidPassword(temporaryPassword);
+      generatedPassword = password ? null : temporaryPassword;
+
+      const hashedPassword = await bcrypt.hash(temporaryPassword, 10);
+
+      user = await userRepository.create({
+        name: resolvedName,
+        email: normalizedEmail,
+        phone: resolvedPhone,
+        password: hashedPassword,
+        role: ROLES.WORKER,
+        roles: normalizeRoles([ROLES.WORKER]),
+        workerStatus: "pending",
+        age,
+        skills,
+        location: {
+          city: parsedCity,
+          state: state || "",
+          zipCode: parsedZipCode || "",
+        },
+        availability: {
+          label: availabilityLabel || availability || "",
+          days: availableDays,
+          startTime: normalizeTimeValue(startTime, "Start time"),
+          endTime: normalizeTimeValue(endTime, "End time"),
+        },
+        profilePhotoUrl,
+        idDocumentUrl,
+        emailVerifiedAt: null,
+      });
+    }
 
     const tokens = await this.createSessionTokens(user, sessionMetadata);
     const verification = await this.queueEmailVerificationForUser(user, {
@@ -477,7 +569,8 @@ class AuthService {
 
     return this.buildAuthResponse(user, tokens, {
       metadata: {
-        generatedPassword: password ? null : temporaryPassword,
+        generatedPassword,
+        upgradedExistingAccount: Boolean(existingUser),
         ...this.buildVerificationMetadata(user, verification?.delivery || null),
       },
     });
@@ -504,6 +597,8 @@ class AuthService {
 
     const updatedUser = await userRepository.updateById(user._id, {
       lastLoginAt: new Date(),
+      role: getPrimaryRole(user),
+      roles: getUserRoles(user),
     });
 
     const tokens = await this.createSessionTokens(updatedUser, sessionMetadata);
@@ -550,12 +645,45 @@ class AuthService {
   }
 
   async getCurrentUser(userId) {
-    const user = await userRepository.findById(userId);
+    const user = await this.syncUserRoles(await userRepository.findById(userId));
     if (!user) {
       throw new AppError("User not found", 404);
     }
 
     return sanitizeUser(user);
+  }
+
+  async switchRole(user, payload = {}, sessionMetadata = {}) {
+    const nextRole = String(payload.role || "").trim().toLowerCase();
+
+    if (!nextRole) {
+      throw new AppError("A role is required to switch account mode", 400);
+    }
+
+    const currentUser = await this.syncUserRoles(await userRepository.findById(user._id));
+
+    if (!currentUser) {
+      throw new AppError("User not found", 404);
+    }
+
+    if (!hasRole(currentUser, nextRole)) {
+      throw new AppError("This account does not have access to the requested role", 403);
+    }
+
+    const updatedUser =
+      currentUser.role === nextRole
+        ? currentUser
+        : await userRepository.updateById(currentUser._id, { role: nextRole });
+
+    const tokens = await this.createSessionTokens(updatedUser, sessionMetadata);
+
+    if (sessionMetadata.currentSessionId) {
+      await authSessionRepository.revokeById(sessionMetadata.currentSessionId, "role_switched");
+    }
+
+    return this.buildAuthResponse(updatedUser, tokens, {
+      metadata: this.buildVerificationMetadata(updatedUser, null),
+    });
   }
 
   async requestEmailVerificationCode(user, options = {}) {

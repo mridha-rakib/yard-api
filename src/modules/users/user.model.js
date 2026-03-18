@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const { ROLE_VALUES, ROLES } = require("../../constants/roles");
 const { USER_STATUSES, WORKER_STATUSES } = require("../../constants/statuses");
+const { getPrimaryRole, getUserRoles } = require("../../utils/user-roles");
 
 const availabilitySchema = new mongoose.Schema(
   {
@@ -80,6 +81,11 @@ const userSchema = new mongoose.Schema(
       enum: ROLE_VALUES,
       default: ROLES.CUSTOMER,
     },
+    roles: {
+      type: [String],
+      enum: ROLE_VALUES,
+      default: undefined,
+    },
     status: {
       type: String,
       enum: USER_STATUSES,
@@ -141,5 +147,19 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+userSchema.pre("validate", function syncRoles(next) {
+  const normalizedRoles = getUserRoles(this);
+
+  if (normalizedRoles.length) {
+    this.roles = normalizedRoles;
+    this.role = getPrimaryRole({
+      role: this.role,
+      roles: normalizedRoles,
+    });
+  }
+
+  next();
+});
 
 module.exports = mongoose.model("User", userSchema);

@@ -1,17 +1,18 @@
 const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const { ROLES } = require("../../constants/roles");
+const { hasRole } = require("../../utils/user-roles");
 const bookingRepository = require("./booking.repository");
 const jobRepository = require("../jobs/job.repository");
 const paymentRepository = require("../payments/payment.repository");
 
 class BookingService {
   async createBookingFromJob(worker, jobId, payload = {}) {
-    if (worker.role !== ROLES.WORKER && worker.role !== ROLES.ADMIN) {
+    if (!hasRole(worker, ROLES.WORKER) && !hasRole(worker, ROLES.ADMIN)) {
       throw new AppError("Only workers and admins can create bookings", 403);
     }
 
-    if (worker.role === ROLES.WORKER && worker.workerStatus !== "approved") {
+    if (hasRole(worker, ROLES.WORKER) && worker.workerStatus !== "approved") {
       throw new AppError("Your worker account is awaiting approval", 403);
     }
 
@@ -57,7 +58,7 @@ class BookingService {
   }
 
   async acceptAvailableJob(worker, jobId) {
-    if (worker.role !== ROLES.WORKER) {
+    if (!hasRole(worker, ROLES.WORKER)) {
       throw new AppError("Only workers can accept jobs", 403);
     }
 
@@ -116,7 +117,7 @@ class BookingService {
     }
 
     const isAllowed =
-      user.role === ROLES.ADMIN ||
+      hasRole(user, ROLES.ADMIN) ||
       String(booking.customer?._id || booking.customer) === String(user._id) ||
       String(booking.worker?._id || booking.worker) === String(user._id);
 
@@ -150,7 +151,7 @@ class BookingService {
   async startBooking(user, bookingId) {
     const booking = await this.getBookingById(user, bookingId);
 
-    if (user.role !== ROLES.ADMIN && String(booking.worker?._id || booking.worker) !== String(user._id)) {
+    if (!hasRole(user, ROLES.ADMIN) && String(booking.worker?._id || booking.worker) !== String(user._id)) {
       throw new AppError("Only the assigned worker can start this booking", 403);
     }
 
@@ -169,7 +170,7 @@ class BookingService {
   async completeBooking(user, bookingId) {
     const booking = await this.getBookingById(user, bookingId);
 
-    if (user.role !== ROLES.ADMIN && String(booking.worker?._id || booking.worker) !== String(user._id)) {
+    if (!hasRole(user, ROLES.ADMIN) && String(booking.worker?._id || booking.worker) !== String(user._id)) {
       throw new AppError("Only the assigned worker can complete this booking", 403);
     }
 
@@ -201,7 +202,7 @@ class BookingService {
     const booking = await this.getBookingById(user, bookingId);
 
     const isAllowed =
-      user.role === ROLES.ADMIN ||
+      hasRole(user, ROLES.ADMIN) ||
       String(booking.customer?._id || booking.customer) === String(user._id) ||
       String(booking.worker?._id || booking.worker) === String(user._id);
 
@@ -224,7 +225,7 @@ class BookingService {
   }
 
   async updateBookingStatusByAdmin(adminUser, bookingId, status) {
-    if (adminUser.role !== ROLES.ADMIN) {
+    if (!hasRole(adminUser, ROLES.ADMIN)) {
       throw new AppError("Only admins can update booking status", 403);
     }
 

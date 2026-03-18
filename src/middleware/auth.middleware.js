@@ -3,6 +3,7 @@ const env = require("../config/env");
 const AppError = require("../errors/AppError");
 const authSessionRepository = require("../modules/auth/auth-session.repository");
 const userRepository = require("../modules/users/user.repository");
+const { getPrimaryRole, getUserRoles, hasAnyRole } = require("../utils/user-roles");
 
 const extractToken = (authorizationHeader = "") => {
   if (!authorizationHeader) {
@@ -55,6 +56,8 @@ const authenticate = async (req, res, next) => {
       throw new AppError("Authenticated user no longer exists", 401);
     }
 
+    user.roles = getUserRoles(user);
+    user.role = getPrimaryRole(user);
     req.user = user;
     req.auth = {
       sessionId: String(session._id),
@@ -73,7 +76,7 @@ const authorize = (...roles) => (req, res, next) => {
     return next(new AppError("Authentication is required", 401));
   }
 
-  if (!roles.includes(req.user.role)) {
+  if (!hasAnyRole(req.user, ...roles)) {
     return next(new AppError("You do not have permission to access this resource", 403));
   }
 
@@ -91,6 +94,10 @@ const optionalAuthenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, env.accessTokenSecret);
     const session = await validateSession(decoded);
     const user = await userRepository.findById(decoded.userId);
+    if (user) {
+      user.roles = getUserRoles(user);
+      user.role = getPrimaryRole(user);
+    }
     req.user = user || null;
     req.auth = user
       ? {

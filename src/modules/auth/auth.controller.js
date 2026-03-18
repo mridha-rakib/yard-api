@@ -3,6 +3,7 @@ const authService = require("./auth.service");
 const getSessionMetadata = (req) => ({
   ipAddress: req.ip || req.socket?.remoteAddress || "",
   userAgent: req.get("user-agent") || "",
+  currentSessionId: req.auth?.sessionId || "",
 });
 
 const getRefreshToken = (req) =>
@@ -19,7 +20,11 @@ class AuthController {
   }
 
   async registerWorker(req, res) {
-    const result = await authService.registerWorker(req.body, getSessionMetadata(req));
+    const result = await authService.registerWorker(
+      req.body,
+      getSessionMetadata(req),
+      req.user || null
+    );
     res.status(201).json({
       success: true,
       message: "Worker registration submitted successfully",
@@ -72,6 +77,15 @@ class AuthController {
     res.json({
       success: true,
       data: user,
+    });
+  }
+
+  async switchRole(req, res) {
+    const result = await authService.switchRole(req.user, req.body || {}, getSessionMetadata(req));
+    res.json({
+      success: true,
+      message: "Account mode switched successfully",
+      data: result,
     });
   }
 

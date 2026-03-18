@@ -1,13 +1,14 @@
 const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const { ROLES } = require("../../constants/roles");
+const { hasRole } = require("../../utils/user-roles");
 const applicationRepository = require("./application.repository");
 const jobRepository = require("../jobs/job.repository");
 const bookingService = require("../bookings/booking.service");
 
 class ApplicationService {
   async applyToJob(worker, jobId, payload = {}) {
-    if (worker.role !== ROLES.WORKER) {
+    if (!hasRole(worker, ROLES.WORKER)) {
       throw new AppError("Only workers can apply to jobs", 403);
     }
 
@@ -57,7 +58,7 @@ class ApplicationService {
       throw new AppError("Job not found", 404);
     }
 
-    if (user.role !== ROLES.ADMIN && String(job.customer) !== String(user._id)) {
+    if (!hasRole(user, ROLES.ADMIN) && String(job.customer) !== String(user._id)) {
       throw new AppError("You do not have permission to view these applications", 403);
     }
 
@@ -66,7 +67,7 @@ class ApplicationService {
   }
 
   async listMyApplications(worker, query = {}) {
-    if (worker.role !== ROLES.WORKER) {
+    if (!hasRole(worker, ROLES.WORKER)) {
       throw new AppError("Only workers can view their applications", 403);
     }
 
@@ -93,7 +94,7 @@ class ApplicationService {
 
     const job = application.job;
     const canManageApplication =
-      user.role === ROLES.ADMIN || String(job.customer) === String(user._id);
+      hasRole(user, ROLES.ADMIN) || String(job.customer) === String(user._id);
 
     if (!canManageApplication) {
       throw new AppError("You do not have permission to update this application", 403);

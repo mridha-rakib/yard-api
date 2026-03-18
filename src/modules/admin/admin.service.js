@@ -16,6 +16,11 @@ const applicationRepository = require("../applications/application.repository");
 const supportRepository = require("../support/support.repository");
 const contentRepository = require("../content/content.repository");
 const authSessionRepository = require("../auth/auth-session.repository");
+const {
+  buildRoleMembershipFilter,
+  combineMongoFilters,
+  hasRole,
+} = require("../../utils/user-roles");
 
 const DEFAULT_PLATFORM_SETTINGS = {
   name: "Yard Heroes",
@@ -151,12 +156,18 @@ class AdminService {
   }
 
   async getAdminProfile(adminUserId) {
-    const adminUser = await userRepository.findOne(this.getVisibleUsersFilter({ _id: adminUserId }), {
-      select: "name email phone profilePhotoUrl lastLoginAt role status",
-      lean: true,
-    });
+    const adminUser = await userRepository.findOne(
+      combineMongoFilters(
+        this.getVisibleUsersFilter({ _id: adminUserId }),
+        buildRoleMembershipFilter(ROLES.ADMIN)
+      ),
+      {
+        select: "name email phone profilePhotoUrl lastLoginAt role roles status",
+        lean: true,
+      }
+    );
 
-    if (!adminUser || adminUser.role !== ROLES.ADMIN) {
+    if (!adminUser || !hasRole(adminUser, ROLES.ADMIN)) {
       throw new AppError("Admin not found", 404);
     }
 
@@ -164,7 +175,7 @@ class AdminService {
   }
 
   async seedAdmin() {
-    const existingAdminCount = await userRepository.count({ role: ROLES.ADMIN });
+    const existingAdminCount = await userRepository.count(buildRoleMembershipFilter(ROLES.ADMIN));
 
     if (existingAdminCount > 0) {
       return {
@@ -211,12 +222,15 @@ class AdminService {
         password: hashedPassword,
         emailVerifiedAt: new Date(),
         role: ROLES.ADMIN,
+        roles: [ROLES.ADMIN],
         status: "active",
         workerStatus: "not_applicable",
       });
     } catch (error) {
       if (error?.code === 11000) {
-        const adminCountAfterConflict = await userRepository.count({ role: ROLES.ADMIN });
+        const adminCountAfterConflict = await userRepository.count(
+          buildRoleMembershipFilter(ROLES.ADMIN)
+        );
 
         if (adminCountAfterConflict > 0) {
           return {
@@ -258,7 +272,12 @@ class AdminService {
 
   async getDashboardRecentWorkerApplications(limit = 5) {
     return userRepository.model
-      .find(this.getVisibleUsersFilter({ role: ROLES.WORKER }))
+      .find(
+        combineMongoFilters(
+          this.getVisibleUsersFilter({}),
+          buildRoleMembershipFilter(ROLES.WORKER)
+        )
+      )
       .sort({ createdAt: -1 })
       .limit(limit)
       .select("name email workerStatus status location profilePhotoUrl createdAt")
@@ -283,17 +302,39 @@ class AdminService {
       recentWorkerApplications,
     ] = await Promise.all([
       userRepository.count(this.getVisibleUsersFilter({})),
-      userRepository.count(this.getVisibleUsersFilter({ role: "worker" })),
       userRepository.count(
-        this.getVisibleUsersFilter({
-          role: "worker",
-          workerStatus: "approved",
-          status: "active",
-        })
+        combineMongoFilters(
+          this.getVisibleUsersFilter({}),
+          buildRoleMembershipFilter(ROLES.WORKER)
+        )
       ),
-      userRepository.count(this.getVisibleUsersFilter({ role: "worker", workerStatus: "pending" })),
-      userRepository.count(this.getVisibleUsersFilter({ role: "customer" })),
-      userRepository.count(this.getVisibleUsersFilter({ role: "customer", status: "active" })),
+      userRepository.count(
+        combineMongoFilters(
+          this.getVisibleUsersFilter({
+            workerStatus: "approved",
+            status: "active",
+          }),
+          buildRoleMembershipFilter(ROLES.WORKER)
+        )
+      ),
+      userRepository.count(
+        combineMongoFilters(
+          this.getVisibleUsersFilter({ workerStatus: "pending" }),
+          buildRoleMembershipFilter(ROLES.WORKER)
+        )
+      ),
+      userRepository.count(
+        combineMongoFilters(
+          this.getVisibleUsersFilter({}),
+          buildRoleMembershipFilter(ROLES.CUSTOMER)
+        )
+      ),
+      userRepository.count(
+        combineMongoFilters(
+          this.getVisibleUsersFilter({ status: "active" }),
+          buildRoleMembershipFilter(ROLES.CUSTOMER)
+        )
+      ),
       jobRepository.count({}),
       jobRepository.count({ status: "new", assignedWorker: null }),
       bookingRepository.count({}),
@@ -367,9 +408,11 @@ class AdminService {
 
   async getWorkerFilters() {
     const skills = await userRepository.model.distinct("skills", {
-      isDeleted: { $ne: true },
-      role: ROLES.WORKER,
-      skills: { $exists: true, $ne: [] },
+      $and: [
+        { isDeleted: { $ne: true } },
+        buildRoleMembershipFilter(ROLES.WORKER),
+        { skills: { $exists: true, $ne: [] } },
+      ],
     });
 
     return {
@@ -381,7 +424,7 @@ class AdminService {
     const worker = await userRepository.findOne(this.getVisibleUsersFilter({ _id: workerId }), {
       select: "-password",
     });
-    if (!worker || worker.role !== "worker") {
+    if (!worker || !hasRole(worker, ROLES.WORKER)) {
       throw new AppError("Worker not found", 404);
     }
 
@@ -406,7 +449,7 @@ class AdminService {
   }
 
   async deleteWorker(adminUser, workerId) {
-    if (adminUser.role !== ROLES.ADMIN) {
+    if (!hasRole(adminUser, ROLES.ADMIN)) {
       throw new AppError("Only admins can delete workers", 403);
     }
 
@@ -522,10 +565,10 @@ class AdminService {
   }
 
   buildCustomerListFilter(query = {}) {
-    const filter = {
-      role: ROLES.CUSTOMER,
-      ...this.buildSearchFilter(query, ["name", "email", "phone"]),
-    };
+    const filter = combineMongoFilters(
+      this.buildSearchFilter(query, ["name", "email", "phone"]),
+      buildRoleMembershipFilter(ROLES.CUSTOMER)
+    );
 
     if (USER_STATUSES.includes(query.status)) {
       filter.status = query.status;
@@ -706,7 +749,7 @@ class AdminService {
       lean: true,
     });
 
-    if (!customer || customer.role !== ROLES.CUSTOMER) {
+    if (!customer || !hasRole(customer, ROLES.CUSTOMER)) {
       throw new AppError("Customer not found", 404);
     }
 
@@ -990,7 +1033,7 @@ class AdminService {
             key: "legal-docs",
             title: "Legal Documents",
             value: this.normalizeLegalDocs(payload.legalDocs),
-            isPublic: false,
+            isPublic: true,
           },
           { upsert: true }
         )

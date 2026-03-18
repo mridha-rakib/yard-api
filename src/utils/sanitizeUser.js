@@ -1,4 +1,5 @@
 const { ROLES } = require("../constants/roles");
+const { getPrimaryRole, getUserRoles, hasRole } = require("./user-roles");
 
 const sanitizeUser = (user) => {
   if (!user) {
@@ -7,8 +8,10 @@ const sanitizeUser = (user) => {
 
   const plainUser = typeof user.toObject === "function" ? user.toObject() : { ...user };
   delete plainUser.password;
+  plainUser.roles = getUserRoles(plainUser);
+  plainUser.role = getPrimaryRole(plainUser);
   plainUser.isEmailVerified =
-    plainUser.role === ROLES.ADMIN
+    hasRole(plainUser, ROLES.ADMIN)
       ? true
       : plainUser.emailVerifiedAt === undefined
         ? true

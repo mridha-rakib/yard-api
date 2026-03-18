@@ -1,6 +1,10 @@
 const BaseRepository = require("../../utils/base.repository");
 const User = require("./user.model");
 const { ROLES } = require("../../constants/roles");
+const {
+  buildRoleMembershipFilter,
+  combineMongoFilters,
+} = require("../../utils/user-roles");
 
 class UserRepository extends BaseRepository {
   constructor() {
@@ -16,15 +20,24 @@ class UserRepository extends BaseRepository {
   }
 
   listWorkers(filter = {}, options = {}) {
-    return this.paginate({ role: ROLES.WORKER, ...filter }, options);
+    return this.paginate(
+      combineMongoFilters(filter, buildRoleMembershipFilter(ROLES.WORKER)),
+      options
+    );
   }
 
   listCustomers(filter = {}, options = {}) {
-    return this.paginate({ role: ROLES.CUSTOMER, ...filter }, options);
+    return this.paginate(
+      combineMongoFilters(filter, buildRoleMembershipFilter(ROLES.CUSTOMER)),
+      options
+    );
   }
 
   listAdmins(filter = {}, options = {}) {
-    return this.paginate({ role: ROLES.ADMIN, ...filter }, options);
+    return this.paginate(
+      combineMongoFilters(filter, buildRoleMembershipFilter(ROLES.ADMIN)),
+      options
+    );
   }
 }
 

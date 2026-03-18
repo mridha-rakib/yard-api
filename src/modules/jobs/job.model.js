@@ -39,8 +39,8 @@ const jobSchema = new mongoose.Schema(
     },
     phoneNumber: {
       type: String,
-      required: true,
       trim: true,
+      default: "",
     },
     email: {
       type: String,

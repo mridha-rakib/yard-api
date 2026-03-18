@@ -4,6 +4,7 @@ const authSessionRepository = require("../auth/auth-session.repository");
 const sanitizeUser = require("../../utils/sanitizeUser");
 const { normalizeTimeValue } = require("../../utils/time");
 const { ROLES } = require("../../constants/roles");
+const { hasRole } = require("../../utils/user-roles");
 const userRepository = require("./user.repository");
 
 class UserService {
@@ -71,7 +72,7 @@ class UserService {
       }
       update.email = payload.email.toLowerCase();
 
-      if (user.role !== ROLES.ADMIN) {
+      if (!hasRole(user, ROLES.ADMIN)) {
         update.emailVerifiedAt = null;
       }
     }
@@ -88,7 +89,7 @@ class UserService {
   }
 
   async getUserById(requestingUser, userId) {
-    if (String(requestingUser._id) !== String(userId) && requestingUser.role !== "admin") {
+    if (String(requestingUser._id) !== String(userId) && !hasRole(requestingUser, ROLES.ADMIN)) {
       throw new AppError("You are not allowed to access this profile", 403);
     }
 

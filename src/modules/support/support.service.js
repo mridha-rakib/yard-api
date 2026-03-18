@@ -1,6 +1,7 @@
 const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const { ROLES } = require("../../constants/roles");
+const { hasRole } = require("../../utils/user-roles");
 const supportRepository = require("./support.repository");
 
 class SupportService {
@@ -50,7 +51,7 @@ class SupportService {
       ];
     }
 
-    if (user.role !== ROLES.ADMIN) {
+    if (!hasRole(user, ROLES.ADMIN)) {
       filter.user = user._id;
     }
 
@@ -68,7 +69,7 @@ class SupportService {
     }
 
     const isAllowed =
-      user.role === ROLES.ADMIN ||
+      hasRole(user, ROLES.ADMIN) ||
       (conversation.user && String(conversation.user._id || conversation.user) === String(user._id));
 
     if (!isAllowed) {
@@ -92,9 +93,9 @@ class SupportService {
       attachments: payload.attachments || [],
     });
 
-    if (user.role === ROLES.ADMIN && conversation.status === "open") {
+    if (hasRole(user, ROLES.ADMIN) && conversation.status === "open") {
       conversation.status = "in_progress";
-    } else if (user.role !== ROLES.ADMIN && conversation.status !== "open") {
+    } else if (!hasRole(user, ROLES.ADMIN) && conversation.status !== "open") {
       conversation.status = "open";
     }
 
@@ -105,7 +106,7 @@ class SupportService {
   }
 
   async updateConversationStatus(user, conversationId, status) {
-    if (user.role !== ROLES.ADMIN) {
+    if (!hasRole(user, ROLES.ADMIN)) {
       throw new AppError("Only admins can update support conversation status", 403);
     }
 
