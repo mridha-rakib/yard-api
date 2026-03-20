@@ -9,6 +9,7 @@ const supportRoutes = require("../modules/support/support.routes");
 const contentRoutes = require("../modules/content/content.routes");
 const testimonialRoutes = require("../modules/testimonials/testimonial.routes");
 const adminRoutes = require("../modules/admin/admin.routes");
+const notificationRoutes = require("../modules/notifications/notification.routes");
 
 const router = express.Router();
 
@@ -30,5 +31,6 @@ router.use("/support", supportRoutes);
 router.use("/content", contentRoutes);
 router.use("/testimonials", testimonialRoutes);
 router.use("/admin", adminRoutes);
+router.use("/notifications", notificationRoutes);
 
 module.exports = router;

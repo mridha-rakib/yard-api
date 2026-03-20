@@ -9,6 +9,7 @@ const paymentRepository = require("./payment.repository");
 const jobRepository = require("../jobs/job.repository");
 const jobService = require("../jobs/job.service");
 const contentRepository = require("../content/content.repository");
+const notificationService = require("../notifications/notification.service");
 
 const PRICING_CONTENT_KEY = "pricing-services";
 const DEFAULT_SERVICE_PRICES = {
@@ -536,6 +537,34 @@ class PaymentService {
           syncedAt
         )
       );
+      const shouldNotify = latestPayment.status !== "authorized" || !latestPayment.job;
+
+      if (shouldNotify) {
+        const jobTitle =
+          ensuredJob?.title || latestPayment?.metadata?.draftJob?.title || "your booking request";
+
+        await Promise.allSettled([
+          notificationService.createForUser(latestPayment.customer, {
+            type: "job_request_submitted",
+            category: "job",
+            title: "Booking request submitted",
+            message: `"${jobTitle}" was submitted and is waiting for a worker.`,
+            link: `/booking-details?jobId=${jobId}`,
+            entityType: "job",
+            entityId: String(jobId),
+          }),
+          notificationService.notifyAdmins({
+            type: "job_request_submitted",
+            category: "job",
+            title: "New booking request",
+            message: `${latestPayment?.metadata?.draftJob?.fullName || "A customer"} submitted "${jobTitle}".`,
+            link: `/booking/${jobId}`,
+            entityType: "job",
+            entityId: String(jobId),
+            actorUserId: latestPayment.customer,
+          }),
+        ]);
+      }
 
       return {
         status:
@@ -625,6 +654,34 @@ class PaymentService {
           syncedAt
         )
       );
+      const shouldNotify = latestPayment.status !== "paid" || !latestPayment.job;
+
+      if (shouldNotify) {
+        const jobTitle =
+          ensuredJob?.title || latestPayment?.metadata?.draftJob?.title || "your booking request";
+
+        await Promise.allSettled([
+          notificationService.createForUser(latestPayment.customer, {
+            type: "job_request_submitted",
+            category: "job",
+            title: "Booking request submitted",
+            message: `"${jobTitle}" was submitted successfully.`,
+            link: `/booking-details?jobId=${jobId}`,
+            entityType: "job",
+            entityId: String(jobId),
+          }),
+          notificationService.notifyAdmins({
+            type: "job_request_submitted",
+            category: "job",
+            title: "New booking request",
+            message: `${latestPayment?.metadata?.draftJob?.fullName || "A customer"} submitted "${jobTitle}".`,
+            link: `/booking/${jobId}`,
+            entityType: "job",
+            entityId: String(jobId),
+            actorUserId: latestPayment.customer,
+          }),
+        ]);
+      }
 
       return {
         status:

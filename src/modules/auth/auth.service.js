@@ -20,6 +20,7 @@ const {
   hasRole,
   normalizeRoles,
 } = require("../../utils/user-roles");
+const notificationService = require("../notifications/notification.service");
 
 const EMAIL_VERIFICATION_PURPOSE = "verify_email";
 const PASSWORD_RESET_PURPOSE = "reset_password";
@@ -421,6 +422,32 @@ class AuthService {
       force: true,
       failSilently: true,
     });
+    await Promise.allSettled([
+      notificationService.createForUser(user, {
+        type: "account_created",
+        category: "account",
+        title: "Welcome to Yard Heroes",
+        message: "Your customer account is ready. You can now book yard work and track your requests.",
+        link: "/myjobs",
+        entityType: "user",
+        entityId: String(user._id),
+      }),
+      notificationService.notifyAdmins(
+        {
+          type: "customer_registered",
+          category: "account",
+          title: "New customer registration",
+          message: `${user.name} created a customer account.`,
+          link: "/customers",
+          entityType: "user",
+          entityId: String(user._id),
+          actorUserId: user._id,
+        },
+        {
+          preferenceKey: "newUserRegistrations",
+        }
+      ),
+    ]);
 
     return this.buildAuthResponse(user, tokens, {
       metadata: this.buildVerificationMetadata(user, verification?.delivery || null),
@@ -566,6 +593,38 @@ class AuthService {
       force: true,
       failSilently: true,
     });
+    await Promise.allSettled([
+      notificationService.createForUser(user, {
+        type: "worker_registration_submitted",
+        category: "account",
+        title:
+          user.workerStatus === "approved"
+            ? "Worker account active"
+            : "Worker registration submitted",
+        message:
+          user.workerStatus === "approved"
+            ? "Your worker account is active and ready for new jobs."
+            : "Your worker registration was submitted and is now waiting for admin review.",
+        link: user.workerStatus === "approved" ? "/worker-home" : "/registration",
+        entityType: "user",
+        entityId: String(user._id),
+      }),
+      notificationService.notifyAdmins(
+        {
+          type: "worker_registered",
+          category: "account",
+          title: "New worker registration",
+          message: `${user.name} submitted a worker registration${existingUser ? " from an existing account" : ""}.`,
+          link: "/workers",
+          entityType: "user",
+          entityId: String(user._id),
+          actorUserId: user._id,
+        },
+        {
+          preferenceKey: "newUserRegistrations",
+        }
+      ),
+    ]);
 
     return this.buildAuthResponse(user, tokens, {
       metadata: {

@@ -6,6 +6,7 @@ const bookingRepository = require("../bookings/booking.repository");
 const bookingService = require("../bookings/booking.service");
 const paymentRepository = require("../payments/payment.repository");
 const jobRepository = require("./job.repository");
+const notificationService = require("../notifications/notification.service");
 
 class JobService {
   normalizeUrgency(urgency = "flexible") {
@@ -103,7 +104,34 @@ class JobService {
     this.validateCreatePayload(mappedPayload);
 
     const job = await jobRepository.create(mappedPayload);
-    return jobRepository.findJobWithRelations(job._id);
+    const hydratedJob = await jobRepository.findJobWithRelations(job._id);
+
+    if (hasRole(user, ROLES.CUSTOMER)) {
+      await Promise.allSettled([
+        notificationService.createForUser(user, {
+          type: "job_created",
+          category: "job",
+          title: "Job request created",
+          message: `"${hydratedJob.title}" was submitted successfully.`,
+          link: `/booking-details?jobId=${hydratedJob._id}`,
+          entityType: "job",
+          entityId: String(hydratedJob._id),
+          actorUserId: user._id,
+        }),
+        notificationService.notifyAdmins({
+          type: "job_created",
+          category: "job",
+          title: "New job request",
+          message: `${user.name} submitted "${hydratedJob.title}".`,
+          link: `/booking/${hydratedJob._id}`,
+          entityType: "job",
+          entityId: String(hydratedJob._id),
+          actorUserId: user._id,
+        }),
+      ]);
+    }
+
+    return hydratedJob;
   }
 
   buildQueryFilter(query = {}) {

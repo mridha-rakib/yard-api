@@ -2,7 +2,27 @@ const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const { ROLES } = require("../../constants/roles");
 const { hasRole } = require("../../utils/user-roles");
+const notificationService = require("../notifications/notification.service");
 const supportRepository = require("./support.repository");
+
+const getSupportLinkForRole = (role = "") => {
+  if (role === ROLES.CUSTOMER) {
+    return "/my-profile";
+  }
+
+  if (role === ROLES.WORKER) {
+    return "/help-support";
+  }
+
+  return "";
+};
+
+const formatStatusLabel = (status = "") =>
+  String(status || "")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 
 class SupportService {
   async createConversation(user, payload) {
@@ -13,7 +33,7 @@ class SupportService {
       throw new AppError("Name, email, subject, and message are required", 400);
     }
 
-    return supportRepository.create({
+    const conversation = await supportRepository.create({
       user: user?._id || null,
       requesterName,
       requesterEmail: requesterEmail.toLowerCase(),
@@ -32,6 +52,23 @@ class SupportService {
       ],
       lastMessageAt: new Date(),
     });
+    await Promise.allSettled([
+      notificationService.notifyAdmins({
+        type: "support_conversation_created",
+        category: "support",
+        title: "New support message",
+        message: `${requesterName} opened a support conversation: "${payload.subject}".`,
+        link: "/support",
+        entityType: "support_conversation",
+        entityId: String(conversation._id),
+        actorUserId: user?._id || null,
+        metadata: {
+          requesterRole: user?.role || "guest",
+        },
+      }),
+    ]);
+
+    return conversation;
   }
 
   async listConversations(user, query = {}) {
@@ -102,7 +139,39 @@ class SupportService {
     conversation.lastMessageAt = new Date();
     await conversation.save();
 
-    return supportRepository.findConversationWithRelations(conversationId);
+    const refreshedConversation = await supportRepository.findConversationWithRelations(conversationId);
+
+    if (hasRole(user, ROLES.ADMIN)) {
+      if (refreshedConversation?.user) {
+        await Promise.allSettled([
+          notificationService.createForUser(refreshedConversation.user, {
+            type: "support_reply_received",
+            category: "support",
+            title: "New reply from support",
+            message: `Support replied to "${refreshedConversation.subject}".`,
+            link: getSupportLinkForRole(refreshedConversation.requesterRole),
+            entityType: "support_conversation",
+            entityId: String(refreshedConversation._id),
+            actorUserId: user._id,
+          }),
+        ]);
+      }
+    } else {
+      await Promise.allSettled([
+        notificationService.notifyAdmins({
+          type: "support_reply_received",
+          category: "support",
+          title: "Support reply received",
+          message: `${user.name} replied to "${refreshedConversation.subject}".`,
+          link: "/support",
+          entityType: "support_conversation",
+          entityId: String(refreshedConversation._id),
+          actorUserId: user._id,
+        }),
+      ]);
+    }
+
+    return refreshedConversation;
   }
 
   async updateConversationStatus(user, conversationId, status) {
@@ -120,8 +189,26 @@ class SupportService {
       status,
       lastMessageAt: new Date(),
     });
+    const refreshedConversation = await supportRepository.findConversationWithRelations(
+      updatedConversation._id
+    );
 
-    return supportRepository.findConversationWithRelations(updatedConversation._id);
+    if (refreshedConversation?.user) {
+      await Promise.allSettled([
+        notificationService.createForUser(refreshedConversation.user, {
+          type: "support_status_updated",
+          category: "support",
+          title: "Support conversation updated",
+          message: `"${refreshedConversation.subject}" is now ${formatStatusLabel(status).toLowerCase()}.`,
+          link: getSupportLinkForRole(refreshedConversation.requesterRole),
+          entityType: "support_conversation",
+          entityId: String(refreshedConversation._id),
+          actorUserId: user._id,
+        }),
+      ]);
+    }
+
+    return refreshedConversation;
   }
 }
 

@@ -19,8 +19,6 @@ const jobSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Payment",
       default: null,
-      index: true,
-      sparse: true,
     },
     title: {
       type: String,

@@ -5,6 +5,7 @@ const { hasRole } = require("../../utils/user-roles");
 const applicationRepository = require("./application.repository");
 const jobRepository = require("../jobs/job.repository");
 const bookingService = require("../bookings/booking.service");
+const notificationService = require("../notifications/notification.service");
 
 class ApplicationService {
   async applyToJob(worker, jobId, payload = {}) {
@@ -37,6 +38,28 @@ class ApplicationService {
       coverLetter: payload.coverLetter || "",
       proposedPrice: Number(payload.proposedPrice || 0),
     });
+    await Promise.allSettled([
+      notificationService.createForUser(job.customer, {
+        type: "job_application_received",
+        category: "application",
+        title: "New job application",
+        message: `${worker.name} applied to "${job.title}".`,
+        link: `/booking-details?jobId=${job._id}`,
+        entityType: "application",
+        entityId: String(application._id),
+        actorUserId: worker._id,
+      }),
+      notificationService.notifyAdmins({
+        type: "job_application_received",
+        category: "application",
+        title: "New worker application",
+        message: `${worker.name} applied to customer job "${job.title}".`,
+        link: `/booking/${job._id}`,
+        entityType: "application",
+        entityId: String(application._id),
+        actorUserId: worker._id,
+      }),
+    ]);
 
     return applicationRepository.findById(application._id, {
       populate: [
@@ -104,6 +127,14 @@ class ApplicationService {
       throw new AppError("Application status must be accepted or rejected", 400);
     }
 
+    const competingApplications =
+      status === "accepted"
+        ? await applicationRepository.findMany(
+            { job: job._id, status: "pending", _id: { $ne: applicationId } },
+            { lean: true, select: "worker" }
+          )
+        : [];
+
     const updatedApplication = await applicationRepository.updateById(applicationId, {
       status,
     });
@@ -120,6 +151,36 @@ class ApplicationService {
         notes: "Created from accepted application",
       });
     }
+
+    await Promise.allSettled([
+      notificationService.createForUser(application.worker, {
+        type: `application_${status}`,
+        category: "application",
+        title: status === "accepted" ? "Application accepted" : "Application update",
+        message:
+          status === "accepted"
+            ? `Your application for "${job.title}" was accepted.`
+            : `Your application for "${job.title}" was not selected.`,
+        link: `/all-jobs/job-details?jobId=${job._id}`,
+        entityType: "application",
+        entityId: String(application._id),
+        actorUserId: user._id,
+      }),
+      ...(status === "accepted"
+        ? competingApplications.map((item) =>
+            notificationService.createForUser(item.worker, {
+              type: "application_rejected",
+              category: "application",
+              title: "Application update",
+              message: `Another worker was selected for "${job.title}".`,
+              link: `/all-jobs/job-details?jobId=${job._id}`,
+              entityType: "application",
+              entityId: String(application._id),
+              actorUserId: user._id,
+            })
+          )
+        : []),
+    ]);
 
     return applicationRepository.findById(updatedApplication._id, {
       populate: [
