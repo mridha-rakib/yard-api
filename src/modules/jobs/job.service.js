@@ -110,6 +110,7 @@ class JobService {
       await Promise.allSettled([
         notificationService.createForUser(user, {
           type: "job_created",
+          recipientRole: ROLES.CUSTOMER,
           category: "job",
           title: "Job request created",
           message: `"${hydratedJob.title}" was submitted successfully.`,

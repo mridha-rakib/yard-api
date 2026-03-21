@@ -425,6 +425,7 @@ class AuthService {
     await Promise.allSettled([
       notificationService.createForUser(user, {
         type: "account_created",
+        recipientRole: ROLES.CUSTOMER,
         category: "account",
         title: "Welcome to Yard Heroes",
         message: "Your customer account is ready. You can now book yard work and track your requests.",
@@ -596,6 +597,7 @@ class AuthService {
     await Promise.allSettled([
       notificationService.createForUser(user, {
         type: "worker_registration_submitted",
+        recipientRole: ROLES.WORKER,
         category: "account",
         title:
           user.workerStatus === "approved"

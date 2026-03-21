@@ -2,7 +2,7 @@ const contentRepository = require("../content/content.repository");
 const notificationRepository = require("./notification.repository");
 const userRepository = require("../users/user.repository");
 const AppError = require("../../errors/AppError");
-const { ROLES } = require("../../constants/roles");
+const { ROLES, ROLE_VALUES } = require("../../constants/roles");
 const { buildRoleMembershipFilter, combineMongoFilters } = require("../../utils/user-roles");
 
 const DEFAULT_ADMIN_NOTIFICATION_SETTINGS = {
@@ -12,9 +12,32 @@ const DEFAULT_ADMIN_NOTIFICATION_SETTINGS = {
 };
 
 class NotificationService {
+  normalizeRecipientRole(role = "") {
+    const normalizedRole = String(role || "").trim().toLowerCase();
+
+    return ROLE_VALUES.includes(normalizedRole) ? normalizedRole : "";
+  }
+
+  buildRecipientRoleScope(user) {
+    const activeRole = this.normalizeRecipientRole(user?.role);
+
+    if (!activeRole) {
+      return {};
+    }
+
+    return {
+      $or: [
+        { recipientRole: activeRole },
+        { recipientRole: "" },
+        { recipientRole: null },
+        { recipientRole: { $exists: false } },
+      ],
+    };
+  }
+
   async listNotifications(user, query = {}) {
     const readFilter = String(query.read || "all").trim().toLowerCase();
-    const filter = {};
+    const filter = this.buildRecipientRoleScope(user);
 
     if (readFilter === "read") {
       filter.isRead = true;
@@ -28,7 +51,10 @@ class NotificationService {
       sort: { createdAt: -1 },
       lean: true,
     });
-    const unreadCount = await notificationRepository.countUnread(user._id);
+    const unreadCount = await notificationRepository.countUnread(
+      user._id,
+      this.buildRecipientRoleScope(user)
+    );
 
     return {
       ...result,
@@ -39,7 +65,11 @@ class NotificationService {
   }
 
   async markAsRead(user, notificationId) {
-    const notification = await notificationRepository.findByIdForRecipient(notificationId, user._id);
+    const notification = await notificationRepository.findByIdForRecipient(
+      notificationId,
+      user._id,
+      this.buildRecipientRoleScope(user)
+    );
 
     if (!notification) {
       throw new AppError("Notification not found", 404);
@@ -60,6 +90,7 @@ class NotificationService {
       {
         recipient: user._id,
         isRead: false,
+        ...this.buildRecipientRoleScope(user),
       },
       {
         isRead: true,
@@ -79,7 +110,7 @@ class NotificationService {
       return null;
     }
 
-    const recipientRole = String(payload.recipientRole || recipient?.role || "").trim().toLowerCase();
+    const recipientRole = this.normalizeRecipientRole(payload.recipientRole);
 
     return notificationRepository.create({
       recipient: recipientId,
@@ -107,7 +138,7 @@ class NotificationService {
 
         return {
           recipient: recipientId,
-          recipientRole: String(payload.recipientRole || recipient?.role || "").trim().toLowerCase(),
+          recipientRole: this.normalizeRecipientRole(payload.recipientRole),
           actorUser: payload.actorUserId || null,
           type: String(payload.type || "general").trim(),
           category: String(payload.category || "system").trim(),

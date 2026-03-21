@@ -146,6 +146,7 @@ class SupportService {
         await Promise.allSettled([
           notificationService.createForUser(refreshedConversation.user, {
             type: "support_reply_received",
+            recipientRole: refreshedConversation.requesterRole,
             category: "support",
             title: "New reply from support",
             message: `Support replied to "${refreshedConversation.subject}".`,
@@ -197,6 +198,7 @@ class SupportService {
       await Promise.allSettled([
         notificationService.createForUser(refreshedConversation.user, {
           type: "support_status_updated",
+          recipientRole: refreshedConversation.requesterRole,
           category: "support",
           title: "Support conversation updated",
           message: `"${refreshedConversation.subject}" is now ${formatStatusLabel(status).toLowerCase()}.`,

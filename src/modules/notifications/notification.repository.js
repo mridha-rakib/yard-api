@@ -6,18 +6,20 @@ class NotificationRepository extends BaseRepository {
     super(Notification);
   }
 
-  countUnread(recipientId) {
+  countUnread(recipientId, filter = {}) {
     return this.count({
       recipient: recipientId,
       isRead: false,
+      ...filter,
     });
   }
 
-  findByIdForRecipient(notificationId, recipientId, options = {}) {
+  findByIdForRecipient(notificationId, recipientId, filter = {}, options = {}) {
     return this.findOne(
       {
         _id: notificationId,
         recipient: recipientId,
+        ...filter,
       },
       options
     );

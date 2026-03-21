@@ -68,6 +68,7 @@ class BookingService {
     await Promise.allSettled([
       notificationService.createForUser(job.customer, {
         type: "booking_assigned",
+        recipientRole: ROLES.CUSTOMER,
         category: "booking",
         title: "Worker assigned to your job",
         message: `${worker.name || "A worker"} has been assigned to "${job.title}".`,
@@ -125,6 +126,7 @@ class BookingService {
       await Promise.allSettled([
         notificationService.createForUser(claimedJob.customer, {
           type: "booking_assigned",
+          recipientRole: ROLES.CUSTOMER,
           category: "booking",
           title: "Worker assigned to your job",
           message: `${worker.name} accepted "${claimedJob.title}".`,
@@ -206,6 +208,7 @@ class BookingService {
     await Promise.allSettled([
       notificationService.createForUser(refreshedBooking.customer, {
         type: "booking_started",
+        recipientRole: ROLES.CUSTOMER,
         category: "booking",
         title: "Work is now in progress",
         message: `${user.name || "Your worker"} started work on "${refreshedBooking.job?.title || "your job"}".`,
@@ -283,6 +286,7 @@ class BookingService {
     await Promise.allSettled([
       notificationService.createForUser(refreshedBooking.customer, {
         type: "booking_completed",
+        recipientRole: ROLES.CUSTOMER,
         category: "booking",
         title: customerNotification.title,
         message: customerNotification.message,
@@ -293,6 +297,7 @@ class BookingService {
       }),
       notificationService.createForUser(refreshedBooking.worker, {
         type: "booking_completed",
+        recipientRole: ROLES.WORKER,
         category: "booking",
         title: workerNotification.title,
         message: workerNotification.message,
@@ -377,6 +382,7 @@ class BookingService {
       String(refreshedBooking.customer?._id || refreshedBooking.customer) !== String(user._id)
         ? notificationService.createForUser(refreshedBooking.customer, {
             type: "booking_cancelled",
+            recipientRole: ROLES.CUSTOMER,
             category: "booking",
             title: "Booking cancelled",
             message: `${actorLabel} cancelled "${jobTitle}".`,
@@ -389,6 +395,7 @@ class BookingService {
       String(refreshedBooking.worker?._id || refreshedBooking.worker) !== String(user._id)
         ? notificationService.createForUser(refreshedBooking.worker, {
             type: "booking_cancelled",
+            recipientRole: ROLES.WORKER,
             category: "booking",
             title: "Booking cancelled",
             message: `${actorLabel} cancelled "${jobTitle}".`,
@@ -457,6 +464,7 @@ class BookingService {
     await Promise.allSettled([
       notificationService.createForUser(refreshedBooking.customer, {
         type: "booking_status_updated",
+        recipientRole: ROLES.CUSTOMER,
         category: "booking",
         title: "Booking updated by admin",
         message: `Admin changed "${refreshedBooking.job?.title || "your booking"}" to ${statusLabel}.`,
@@ -467,6 +475,7 @@ class BookingService {
       }),
       notificationService.createForUser(refreshedBooking.worker, {
         type: "booking_status_updated",
+        recipientRole: ROLES.WORKER,
         category: "booking",
         title: "Booking updated by admin",
         message: `Admin changed "${refreshedBooking.job?.title || "your booking"}" to ${statusLabel}.`,

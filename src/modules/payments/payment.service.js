@@ -546,6 +546,7 @@ class PaymentService {
         await Promise.allSettled([
           notificationService.createForUser(latestPayment.customer, {
             type: "job_request_submitted",
+            recipientRole: ROLES.CUSTOMER,
             category: "job",
             title: "Booking request submitted",
             message: `"${jobTitle}" was submitted and is waiting for a worker.`,
@@ -663,6 +664,7 @@ class PaymentService {
         await Promise.allSettled([
           notificationService.createForUser(latestPayment.customer, {
             type: "job_request_submitted",
+            recipientRole: ROLES.CUSTOMER,
             category: "job",
             title: "Booking request submitted",
             message: `"${jobTitle}" was submitted successfully.`,

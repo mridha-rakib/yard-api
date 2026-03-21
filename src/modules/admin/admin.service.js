@@ -431,6 +431,7 @@ class AdminService {
     await Promise.allSettled([
       notificationService.createForUser(updatedWorker, {
         type: `worker_status_${workerStatus}`,
+        recipientRole: ROLES.WORKER,
         category: "account",
         title:
           workerStatus === "approved"
@@ -460,6 +461,7 @@ class AdminService {
     await Promise.allSettled([
       notificationService.createForUser(updatedWorker, {
         type: "worker_account_status_updated",
+        recipientRole: ROLES.WORKER,
         category: "account",
         title: "Account status updated",
         message: `An admin changed your account status to ${status}.`,

@@ -41,6 +41,7 @@ class ApplicationService {
     await Promise.allSettled([
       notificationService.createForUser(job.customer, {
         type: "job_application_received",
+        recipientRole: ROLES.CUSTOMER,
         category: "application",
         title: "New job application",
         message: `${worker.name} applied to "${job.title}".`,
@@ -155,6 +156,7 @@ class ApplicationService {
     await Promise.allSettled([
       notificationService.createForUser(application.worker, {
         type: `application_${status}`,
+        recipientRole: ROLES.WORKER,
         category: "application",
         title: status === "accepted" ? "Application accepted" : "Application update",
         message:
@@ -170,6 +172,7 @@ class ApplicationService {
         ? competingApplications.map((item) =>
             notificationService.createForUser(item.worker, {
               type: "application_rejected",
+              recipientRole: ROLES.WORKER,
               category: "application",
               title: "Application update",
               message: `Another worker was selected for "${job.title}".`,
