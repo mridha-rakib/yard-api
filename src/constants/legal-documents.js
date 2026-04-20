@@ -6,12 +6,12 @@ const TERMS_AND_CONDITIONS_BODY = `
     <h2>1. Introduction</h2>
     <p>
       Welcome to YardWork. These Terms &amp; Conditions govern your use of our platform,
-      which connects customers seeking yard work services with qualified workers. By
+      which connects customers seeking yard work services with qualified Heroes. By
       accessing or using our platform, you agree to be bound by these terms.
     </p>
     <p>
       Our platform serves as a marketplace to facilitate connections between customers
-      and workers. We are not an employer, and we do not directly provide yard work services.
+      and Heroes. We are not an employer, and we do not directly provide yard work services.
     </p>
   </section>
   <section>
@@ -32,14 +32,14 @@ const TERMS_AND_CONDITIONS_BODY = `
     <h2>3. Platform Role</h2>
     <p>
       YardWork operates as a connection service only. We provide the technology platform
-      that enables customers and workers to find and communicate with each other.
+      that enables customers and Heroes to find and communicate with each other.
     </p>
     <p><strong>Important clarifications:</strong></p>
     <ul>
-      <li>We do not employ workers or control how they perform services</li>
+      <li>We do not employ Heroes or control how they perform services</li>
       <li>We do not guarantee the quality, safety, or legality of services provided</li>
-      <li>Workers are independent contractors, not employees of YardWork</li>
-      <li>All agreements for services are directly between customers and workers</li>
+      <li>Heroes are Independent Hero Contractors, not employees of YardWork</li>
+      <li>All agreements for services are directly between customers and Independent Hero Contractors</li>
       <li>We facilitate payment processing but are not party to the service contract</li>
     </ul>
   </section>
@@ -49,11 +49,11 @@ const TERMS_AND_CONDITIONS_BODY = `
     <ul>
       <li>Provide accurate and complete job descriptions, including location, scope of work, and timeline</li>
       <li>Set fair and reasonable compensation for the work requested</li>
-      <li>Respond promptly to worker inquiries and applications</li>
+      <li>Respond promptly to Hero inquiries and applications</li>
       <li>Do not post jobs that violate local laws or regulations</li>
       <li>Cancel jobs with adequate notice if plans change</li>
     </ul>
-    <h3>For Workers</h3>
+    <h3>For Independent Hero Contractors</h3>
     <ul>
       <li>Only accept jobs you are qualified and equipped to complete</li>
       <li>Communicate clearly about your availability and capabilities</li>
@@ -65,7 +65,7 @@ const TERMS_AND_CONDITIONS_BODY = `
   <section>
     <h2>5. Payments &amp; Platform Fees</h2>
     <p>
-      YardWork facilitates secure payment processing between customers and workers.
+      YardWork facilitates secure payment processing between customers and Heroes.
       Here's how it works:
     </p>
     <blockquote>
@@ -79,21 +79,21 @@ const TERMS_AND_CONDITIONS_BODY = `
     <ul>
       <li>Customers pay through the platform when posting or accepting a quote</li>
       <li>Funds are held securely until job completion is confirmed</li>
-      <li>Workers receive payment after the customer confirms satisfactory completion</li>
+      <li>Heroes receive payment after the customer confirms satisfactory completion</li>
       <li>The 12% platform fee is automatically deducted from the total payment</li>
-      <li>Workers receive 88% of the agreed job price</li>
+      <li>Heroes receive 88% of the agreed job price</li>
       <li>Refunds are processed according to our dispute resolution policy</li>
     </ul>
   </section>
   <section>
     <h2>6. Job Completion &amp; Disputes</h2>
     <p>
-      We encourage direct communication between customers and workers to resolve any issues.
+      We encourage direct communication between customers and Heroes to resolve any issues.
       However, if disputes arise:
     </p>
     <ul>
       <li>Customers must confirm job completion within 48 hours or provide specific reasons for dissatisfaction</li>
-      <li>Workers should document completed work with photos when possible</li>
+      <li>Heroes should document completed work with photos when possible</li>
       <li>Either party can open a dispute through the platform within 7 days of job completion</li>
       <li>Our support team will review evidence from both parties</li>
       <li>We reserve the right to make final decisions on payment release in disputes</li>
@@ -132,13 +132,13 @@ const PRIVACY_POLICY_BODY = `
       <div>
         <h3>Job Matching</h3>
         <p>
-          Connect customers with qualified workers based on location, skills, and availability.
+          Connect customers with qualified Heroes based on location, skills, and availability.
         </p>
       </div>
       <div>
         <h3>Communication</h3>
         <p>
-          Enable secure messaging between customers and workers for job coordination.
+          Enable secure messaging between customers and Heroes for job coordination.
         </p>
       </div>
       <div>
@@ -271,7 +271,7 @@ const PLACEHOLDER_LEGAL_BODY_PATTERN = /(what is lorem ipsum|lorem ipsum|content
 const LEGACY_AUTOGENERATED_TERMS_PATTERNS = [
   /These Terms &amp; Conditions govern your use of the Yard Heroes platform, including/i,
   /Account information must remain truthful and up to date\./i,
-  /Platform Fee:<\/strong> A 12% service fee is deducted from each completed job before/i,
+  /Platform Fee:<\/strong> A (?:10|12)% service fee is deducted from each completed job before/i,
 ];
 const LEGACY_AUTOGENERATED_PRIVACY_PATTERNS = [
   /We collect certain information when you create your account, request services, or contact us through Yard Heroes\./i,

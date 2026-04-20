@@ -7,6 +7,7 @@ const {
   optionalAuthenticate,
 } = require("../../middleware/auth.middleware");
 const { ROLES } = require("../../constants/roles");
+const jobChatController = require("../job-chat/job-chat.controller");
 
 const router = express.Router();
 
@@ -18,6 +19,18 @@ router.get(
   asyncHandler(jobController.listAvailableJobs)
 );
 router.get("/my", authenticate, asyncHandler(jobController.listMyJobs));
+router.get(
+  "/:jobId/chat",
+  authenticate,
+  authorize(ROLES.CUSTOMER, ROLES.WORKER, ROLES.ADMIN),
+  asyncHandler(jobChatController.getConversation)
+);
+router.post(
+  "/:jobId/chat/messages",
+  authenticate,
+  authorize(ROLES.CUSTOMER, ROLES.WORKER, ROLES.ADMIN),
+  asyncHandler(jobChatController.addMessage)
+);
 router.post(
   "/:jobId/accept",
   authenticate,

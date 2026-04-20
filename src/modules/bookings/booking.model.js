@@ -40,6 +40,42 @@ const bookingSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    workerCompletionNotes: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    verificationPhotoUrls: {
+      type: [String],
+      default: [],
+    },
+    verificationVideoUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    verificationSubmittedAt: {
+      type: Date,
+      default: null,
+    },
+    verificationReviewedAt: {
+      type: Date,
+      default: null,
+    },
+    verificationApprovedAt: {
+      type: Date,
+      default: null,
+    },
+    verificationApprovedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    verificationNotes: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     cancelReason: {
       type: String,
       trim: true,

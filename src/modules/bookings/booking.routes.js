@@ -24,6 +24,11 @@ router.patch(
   authorize(ROLES.WORKER, ROLES.ADMIN),
   asyncHandler(bookingController.completeBooking)
 );
+router.patch(
+  "/:bookingId/approve-completion",
+  authorize(ROLES.ADMIN),
+  asyncHandler(bookingController.approveCompletion)
+);
 router.patch("/:bookingId/cancel", asyncHandler(bookingController.cancelBooking));
 router.patch(
   "/:bookingId/status",

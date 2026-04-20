@@ -48,16 +48,24 @@ class JobService {
   }
 
   mapCreatePayload(user, payload) {
-    const serviceType = payload.serviceType || payload.category;
+    const serviceId = payload.serviceId || "";
+    const serviceType = payload.serviceType || payload.serviceTitle || payload.category || serviceId;
     const urgency = this.normalizeUrgency(payload.urgency);
     const jobDescription =
       payload.jobDescription || payload.description || payload.stateCountry;
+    const pricing =
+      payload.pricing && typeof payload.pricing === "object" ? payload.pricing : {};
+    const estimatedPrice =
+      pricing?.finalPrice ?? payload.estimatedPrice ?? payload.estimatedTotal ?? 0;
 
     return {
       customer: user._id,
       assignedWorker: null,
       title: this.buildTitle(serviceType, payload.title),
+      serviceId,
       serviceType,
+      serviceCategoryId: payload.serviceCategoryId || payload.categoryId || "",
+      serviceCategoryLabel: payload.serviceCategoryLabel || payload.categoryLabel || "",
       fullName: payload.fullName || user.name,
       phoneNumber: payload.phoneNumber || payload.phone || "",
       email: payload.email || user.email,
@@ -71,8 +79,9 @@ class JobService {
       preferredTime: payload.preferredTime || "",
       jobSize: payload.jobSize || "",
       priority: this.getPriorityFromUrgency(urgency, payload.priority),
-      estimatedPrice: Number(payload.estimatedPrice || payload.estimatedTotal || 0),
-      priceQuoted: Number(payload.priceQuoted || 0),
+      estimatedPrice: Number(estimatedPrice || 0),
+      priceQuoted: Number(payload.priceQuoted || estimatedPrice || 0),
+      pricing,
       photos: payload.photos || payload.photoUrls || [],
       paymentStatus: payload.isPaid ? "paid" : "pending",
       isPaid: Boolean(payload.isPaid),
@@ -188,7 +197,7 @@ class JobService {
         {
           lean: true,
           select:
-            "job status scheduledDate scheduledTime notes cancelReason startedAt completedAt cancelledAt createdAt",
+            "job status scheduledDate scheduledTime notes workerCompletionNotes verificationPhotoUrls verificationVideoUrl verificationSubmittedAt verificationReviewedAt verificationApprovedAt verificationApprovedBy verificationNotes cancelReason startedAt completedAt cancelledAt createdAt",
         }
       ),
       paymentRepository.findMany(
@@ -253,11 +262,11 @@ class JobService {
 
   async listAvailableJobs(worker, query = {}) {
     if (!hasRole(worker, ROLES.WORKER)) {
-      throw new AppError("Only workers can view available jobs", 403);
+      throw new AppError("Only Heroes can view available jobs", 403);
     }
 
     if (worker.workerStatus !== "approved") {
-      throw new AppError("Your worker account is awaiting approval", 403);
+      throw new AppError("Your Hero account is awaiting approval", 403);
     }
 
     const pagination = buildPagination(query);
@@ -298,11 +307,18 @@ class JobService {
       sort: { createdAt: -1 },
     });
 
-    const [newCount, assignedCount, inProgressCount, completedCount] = await Promise.all([
+    const [
+      newCount,
+      assignedCount,
+      inProgressCount,
+      pendingVerificationCount,
+      completedCount,
+    ] = await Promise.all([
       jobRepository.count({ ...filter, status: "new" }),
       jobRepository.count({ ...filter, status: "assigned" }),
       jobRepository.count({ ...filter, status: "in_progress" }),
-      jobRepository.count({ ...filter, status: "completed" }),
+      jobRepository.count({ ...filter, status: "pending_verification" }),
+      jobRepository.count({ ...filter, status: { $in: ["completed", "paid"] } }),
     ]);
 
     return {
@@ -312,6 +328,7 @@ class JobService {
         new: newCount,
         assigned: assignedCount,
         inProgress: inProgressCount,
+        pendingVerification: pendingVerificationCount,
         completed: completedCount,
       },
     };
@@ -367,6 +384,9 @@ class JobService {
     [
       "title",
       "serviceType",
+      "serviceId",
+      "serviceCategoryId",
+      "serviceCategoryLabel",
       "streetAddress",
       "city",
       "state",
@@ -398,6 +418,11 @@ class JobService {
 
     if (payload.estimatedPrice !== undefined || payload.estimatedTotal !== undefined) {
       update.estimatedPrice = Number(payload.estimatedPrice || payload.estimatedTotal || 0);
+    }
+
+    if (payload.pricing !== undefined) {
+      update.pricing =
+        payload.pricing && typeof payload.pricing === "object" ? payload.pricing : {};
     }
 
     const updatedJob = await jobRepository.updateById(jobId, update);

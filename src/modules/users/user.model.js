@@ -52,6 +52,41 @@ const locationSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const portfolioItemSchema = new mongoose.Schema(
+  {
+    id: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    title: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    description: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    serviceType: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    imageUrl: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    completedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
 const userSchema = new mongoose.Schema(
   {
     name: {
@@ -107,6 +142,15 @@ const userSchema = new mongoose.Schema(
     },
     skills: {
       type: [String],
+      default: [],
+    },
+    workerBio: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    portfolioItems: {
+      type: [portfolioItemSchema],
       default: [],
     },
     availability: {

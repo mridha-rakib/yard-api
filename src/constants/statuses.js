@@ -1,7 +1,22 @@
 const USER_STATUSES = ["active", "inactive", "suspended"];
 const WORKER_STATUSES = ["not_applicable", "pending", "approved", "rejected"];
-const JOB_STATUSES = ["new", "assigned", "in_progress", "completed", "cancelled", "paid"];
-const BOOKING_STATUSES = ["assigned", "in_progress", "completed", "cancelled"];
+const JOB_STATUSES = [
+  "new",
+  "assigned",
+  "in_progress",
+  "pending_verification",
+  "completed",
+  "cancelled",
+  "paid",
+];
+const BOOKING_STATUSES = [
+  "assigned",
+  "in_progress",
+  "pending_verification",
+  "approved",
+  "completed",
+  "cancelled",
+];
 const APPLICATION_STATUSES = ["pending", "accepted", "rejected", "withdrawn"];
 const PAYMENT_STATUSES = ["pending", "authorized", "paid", "failed", "refunded", "cancelled"];
 const PAYMENT_METHODS = ["card", "cash", "paypal", "bank_transfer", "unknown"];

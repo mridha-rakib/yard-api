@@ -19,7 +19,7 @@ class UserRepository extends BaseRepository {
     return this.findOne({ phone }, options);
   }
 
-  listWorkers(filter = {}, options = {}) {
+  listHeroes(filter = {}, options = {}) {
     return this.paginate(
       combineMongoFilters(filter, buildRoleMembershipFilter(ROLES.WORKER)),
       options

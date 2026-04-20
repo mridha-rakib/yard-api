@@ -19,15 +19,15 @@ class AuthController {
     });
   }
 
-  async registerWorker(req, res) {
-    const result = await authService.registerWorker(
+  async registerHero(req, res) {
+    const result = await authService.registerHero(
       req.body,
       getSessionMetadata(req),
       req.user || null
     );
     res.status(201).json({
       success: true,
-      message: "Worker registration submitted successfully",
+      message: "Hero application submitted successfully",
       data: result,
     });
   }

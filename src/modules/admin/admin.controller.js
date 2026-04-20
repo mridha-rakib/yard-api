@@ -6,42 +6,42 @@ class AdminController {
     res.json({ success: true, data: stats });
   }
 
-  async listWorkers(req, res) {
-    const result = await adminService.listWorkers(req.query);
+  async listHeroes(req, res) {
+    const result = await adminService.listHeroes(req.query);
     res.json({ success: true, ...result });
   }
 
-  async getWorkerFilters(req, res) {
-    const filters = await adminService.getWorkerFilters();
+  async getHeroFilters(req, res) {
+    const filters = await adminService.getHeroFilters();
     res.json({ success: true, data: filters });
   }
 
-  async getWorkerById(req, res) {
-    const worker = await adminService.getWorkerById(req.params.workerId);
+  async getHeroById(req, res) {
+    const worker = await adminService.getHeroById(req.params.workerId);
     res.json({ success: true, data: worker });
   }
 
-  async approveWorker(req, res) {
-    const worker = await adminService.updateWorkerStatus(req.params.workerId, "approved");
-    res.json({ success: true, message: "Worker approved", data: worker });
+  async approveHero(req, res) {
+    const worker = await adminService.updateHeroStatus(req.params.workerId, "approved");
+    res.json({ success: true, message: "Hero approved", data: worker });
   }
 
-  async rejectWorker(req, res) {
-    const worker = await adminService.updateWorkerStatus(req.params.workerId, "rejected");
-    res.json({ success: true, message: "Worker rejected", data: worker });
+  async rejectHero(req, res) {
+    const worker = await adminService.updateHeroStatus(req.params.workerId, "rejected");
+    res.json({ success: true, message: "Hero rejected", data: worker });
   }
 
-  async deleteWorker(req, res) {
-    const result = await adminService.deleteWorker(req.user, req.params.workerId);
-    res.json({ success: true, message: "Worker deleted", data: result });
+  async deleteHero(req, res) {
+    const result = await adminService.deleteHero(req.user, req.params.workerId);
+    res.json({ success: true, message: "Hero deleted", data: result });
   }
 
-  async updateWorkerAccountStatus(req, res) {
-    const worker = await adminService.updateWorkerAccountStatus(
+  async updateHeroAccountStatus(req, res) {
+    const worker = await adminService.updateHeroAccountStatus(
       req.params.workerId,
       req.body.status
     );
-    res.json({ success: true, message: "Worker account status updated", data: worker });
+    res.json({ success: true, message: "Hero account status updated", data: worker });
   }
 
   async listCustomers(req, res) {
@@ -71,6 +71,19 @@ class AdminController {
       req.body.status
     );
     res.json({ success: true, message: "Booking updated", data: booking });
+  }
+
+  async approveBookingCompletion(req, res) {
+    const result = await adminService.approveBookingCompletion(
+      req.user,
+      req.params.bookingId,
+      req.body.reviewNotes
+    );
+    res.json({
+      success: true,
+      message: "Booking completion approved",
+      data: result,
+    });
   }
 
   async listPayments(req, res) {

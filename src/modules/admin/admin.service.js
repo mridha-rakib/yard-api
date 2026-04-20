@@ -36,7 +36,7 @@ const DEFAULT_PLATFORM_SETTINGS = {
 };
 
 const DEFAULT_PAYMENT_SETTINGS = {
-  platformFee: 12,
+  platformFee: env.defaultPlatformFeePercentage,
   minimumServiceAmount: 25,
   paymentProcessor: "stripe",
 };
@@ -263,7 +263,7 @@ class AdminService {
     return jobService.attachOperationalDetails(recentJobs);
   }
 
-  async getDashboardRecentWorkerApplications(limit = 5) {
+  async getDashboardRecentHeroApplications(limit = 5) {
     return userRepository.model
       .find(
         combineMongoFilters(
@@ -280,9 +280,9 @@ class AdminService {
   async getDashboardStats() {
     const [
       totalUsers,
-      totalWorkers,
-      activeWorkers,
-      pendingWorkers,
+      totalHeroes,
+      activeHeroes,
+      pendingHeroes,
       totalCustomers,
       activeCustomers,
       totalJobs,
@@ -292,7 +292,7 @@ class AdminService {
       totalSupportConversations,
       totalRevenueResult,
       recentBookings,
-      recentWorkerApplications,
+      recentHeroApplications,
     ] = await Promise.all([
       userRepository.count(this.getVisibleUsersFilter({})),
       userRepository.count(
@@ -344,25 +344,25 @@ class AdminService {
             _id: null,
             totalAmount: { $sum: "$amount" },
             totalPlatformFee: { $sum: "$platformFee" },
-            totalWorkerPayout: { $sum: "$workerPayout" },
+            totalHeroPayout: { $sum: "$workerPayout" },
           },
         },
       ]),
       this.getDashboardRecentBookings(),
-      this.getDashboardRecentWorkerApplications(),
+      this.getDashboardRecentHeroApplications(),
     ]);
 
     const revenue = totalRevenueResult[0] || {
       totalAmount: 0,
       totalPlatformFee: 0,
-      totalWorkerPayout: 0,
+      totalHeroPayout: 0,
     };
 
     return {
       totalUsers,
-      totalWorkers,
-      activeWorkers,
-      pendingWorkers,
+      totalHeroes,
+      activeHeroes,
+      pendingHeroes,
       totalCustomers,
       activeCustomers,
       totalJobs,
@@ -372,13 +372,13 @@ class AdminService {
       totalSupportConversations,
       totalRevenue: revenue.totalAmount,
       totalPlatformFee: revenue.totalPlatformFee,
-      totalWorkerPayout: revenue.totalWorkerPayout,
+      totalHeroPayout: revenue.totalHeroPayout,
       recentBookings,
-      recentWorkerApplications,
+      recentHeroApplications,
     };
   }
 
-  async listWorkers(query = {}) {
+  async listHeroes(query = {}) {
     const pagination = buildPagination(query);
     const filter = this.getVisibleUsersFilter({
       ...this.buildSearchFilter(query, ["name", "email", "phone"]),
@@ -392,14 +392,14 @@ class AdminService {
       filter.skills = query.skill;
     }
 
-    return userRepository.listWorkers(filter, {
+    return userRepository.listHeroes(filter, {
       ...pagination,
       sort: { createdAt: -1 },
       select: "-password",
     });
   }
 
-  async getWorkerFilters() {
+  async getHeroFilters() {
     const skills = await userRepository.model.distinct("skills", {
       $and: [
         { isDeleted: { $ne: true } },
@@ -413,53 +413,53 @@ class AdminService {
     };
   }
 
-  async getWorkerById(workerId) {
+  async getHeroById(workerId) {
     const worker = await userRepository.findOne(this.getVisibleUsersFilter({ _id: workerId }), {
       select: "-password",
     });
     if (!worker || !hasRole(worker, ROLES.WORKER)) {
-      throw new AppError("Worker not found", 404);
+      throw new AppError("Hero not found", 404);
     }
 
     return worker;
   }
 
-  async updateWorkerStatus(workerId, workerStatus) {
-    const worker = await this.getWorkerById(workerId);
+  async updateHeroStatus(workerId, workerStatus) {
+    const worker = await this.getHeroById(workerId);
     await userRepository.updateById(worker._id, { workerStatus });
-    const updatedWorker = await this.getWorkerById(worker._id);
+    const updatedHero = await this.getHeroById(worker._id);
     await Promise.allSettled([
-      notificationService.createForUser(updatedWorker, {
+      notificationService.createForUser(updatedHero, {
         type: `worker_status_${workerStatus}`,
         recipientRole: ROLES.WORKER,
         category: "account",
         title:
           workerStatus === "approved"
-            ? "Worker application approved"
-            : "Worker application updated",
+            ? "Hero application approved"
+            : "Hero application updated",
         message:
           workerStatus === "approved"
-            ? "Your worker application was approved. You can now accept jobs."
-            : "Your worker application was rejected. Please review your details and try again.",
+            ? "Your Hero application was approved. You can now accept jobs."
+            : "Your Hero application was rejected. Please review your details and try again.",
         link: workerStatus === "approved" ? "/worker-home" : "/registration",
         entityType: "user",
-        entityId: String(updatedWorker._id),
+        entityId: String(updatedHero._id),
       }),
     ]);
-    return updatedWorker;
+    return updatedHero;
   }
 
-  async updateWorkerAccountStatus(workerId, status) {
-    const worker = await this.getWorkerById(workerId);
+  async updateHeroAccountStatus(workerId, status) {
+    const worker = await this.getHeroById(workerId);
 
     if (!USER_STATUSES.includes(status)) {
-      throw new AppError("Invalid worker account status", 400);
+      throw new AppError("Invalid Hero account status", 400);
     }
 
     await userRepository.updateById(worker._id, { status });
-    const updatedWorker = await this.getWorkerById(worker._id);
+    const updatedHero = await this.getHeroById(worker._id);
     await Promise.allSettled([
-      notificationService.createForUser(updatedWorker, {
+      notificationService.createForUser(updatedHero, {
         type: "worker_account_status_updated",
         recipientRole: ROLES.WORKER,
         category: "account",
@@ -467,25 +467,25 @@ class AdminService {
         message: `An admin changed your account status to ${status}.`,
         link: "/registration",
         entityType: "user",
-        entityId: String(updatedWorker._id),
+        entityId: String(updatedHero._id),
       }),
     ]);
-    return updatedWorker;
+    return updatedHero;
   }
 
-  async deleteWorker(adminUser, workerId) {
+  async deleteHero(adminUser, workerId) {
     if (!hasRole(adminUser, ROLES.ADMIN)) {
-      throw new AppError("Only admins can delete workers", 403);
+      throw new AppError("Only admins can delete Heroes", 403);
     }
 
-    const worker = await this.getWorkerById(workerId);
-    const [inProgressJobs, inProgressBookings, assignedJobs, assignedBookings] = await Promise.all([
+    const worker = await this.getHeroById(workerId);
+    const [inProgressJobs, inProgressBookings, acceptedJobs, acceptedBookings] = await Promise.all([
       jobRepository.findMany(
-        { assignedWorker: worker._id, status: "in_progress" },
+        { assignedWorker: worker._id, status: { $in: ["in_progress", "pending_verification"] } },
         { lean: true, select: "_id" }
       ),
       bookingRepository.findMany(
-        { worker: worker._id, status: "in_progress" },
+        { worker: worker._id, status: { $in: ["in_progress", "pending_verification"] } },
         { lean: true, select: "_id" }
       ),
       jobRepository.findMany(
@@ -500,28 +500,28 @@ class AdminService {
 
     if (inProgressJobs.length || inProgressBookings.length) {
       throw new AppError(
-        "This worker has work in progress. Complete or cancel those bookings before deleting the profile.",
+        "This Hero has work in progress. Complete or cancel those bookings before deleting the profile.",
         409
       );
     }
 
-    const assignedBookingIds = assignedBookings.map((booking) => booking._id);
-    const assignedJobIds = [...new Set(
-      [...assignedJobs.map((job) => job._id), ...assignedBookings.map((booking) => booking.job)].filter(
+    const acceptedBookingIds = acceptedBookings.map((booking) => booking._id);
+    const acceptedJobIds = [...new Set(
+      [...acceptedJobs.map((job) => job._id), ...acceptedBookings.map((booking) => booking.job)].filter(
         Boolean
       )
     )];
     const now = new Date();
-    const deletionReason = "Worker profile deleted by admin";
+    const deletionReason = "Hero profile deleted by admin";
     const replacementPasswordHash = await bcrypt.hash(
       `deleted-worker-${worker._id}-${Date.now()}`,
       10
     );
 
-    if (assignedBookingIds.length > 0) {
+    if (acceptedBookingIds.length > 0) {
       await Promise.all([
         bookingRepository.updateMany(
-          { _id: { $in: assignedBookingIds } },
+          { _id: { $in: acceptedBookingIds } },
           {
             status: "cancelled",
             cancelReason: deletionReason,
@@ -529,7 +529,7 @@ class AdminService {
           }
         ),
         jobRepository.updateMany(
-          { _id: { $in: assignedJobIds } },
+          { _id: { $in: acceptedJobIds } },
           {
             assignedWorker: null,
             status: "new",
@@ -539,8 +539,8 @@ class AdminService {
         paymentRepository.updateMany(
           {
             $or: [
-              { booking: { $in: assignedBookingIds } },
-              { job: { $in: assignedJobIds }, worker: worker._id },
+              { booking: { $in: acceptedBookingIds } },
+              { job: { $in: acceptedJobIds }, worker: worker._id },
             ],
           },
           {
@@ -556,7 +556,7 @@ class AdminService {
       authSessionRepository.revokeAllByUser(worker._id, "admin_worker_delete"),
       userRepository.updateById(worker._id, {
         $set: {
-          name: "Deleted Worker",
+          name: "Deleted Hero",
           email: `deleted-worker-${String(worker._id).toLowerCase()}@yardheroes.local`,
           phone: `deleted-${String(worker._id)}`,
           password: replacementPasswordHash,
@@ -583,9 +583,9 @@ class AdminService {
     ]);
 
     return {
-      deletedWorkerId: String(worker._id),
-      reopenedJobs: assignedJobIds.length,
-      cancelledBookings: assignedBookingIds.length,
+      deletedHeroId: String(worker._id),
+      reopenedJobs: acceptedJobIds.length,
+      cancelledBookings: acceptedBookingIds.length,
     };
   }
 
@@ -797,7 +797,7 @@ class AdminService {
               },
               activeBookings: {
                 $sum: {
-                  $cond: [{ $in: ["$status", ["new", "assigned", "in_progress"]] }, 1, 0],
+                  $cond: [{ $in: ["$status", ["new", "assigned", "in_progress", "pending_verification"]] }, 1, 0],
                 },
               },
               cancelledBookings: {
@@ -955,6 +955,12 @@ class AdminService {
 
   async updateBookingStatus(adminUser, bookingId, status) {
     return bookingService.updateBookingStatusByAdmin(adminUser, bookingId, status);
+  }
+
+  async approveBookingCompletion(adminUser, bookingId, reviewNotes = "") {
+    return bookingService.approveCompletionByAdmin(adminUser, bookingId, {
+      reviewNotes,
+    });
   }
 
   async listPayments(adminUser, query = {}) {

@@ -6,7 +6,7 @@ const { authenticate, optionalAuthenticate } = require("../../middleware/auth.mi
 const router = express.Router();
 
 router.post("/register", asyncHandler(authController.register));
-router.post("/worker-register", optionalAuthenticate, asyncHandler(authController.registerWorker));
+router.post("/worker-register", optionalAuthenticate, asyncHandler(authController.registerHero));
 router.post("/login", asyncHandler(authController.login));
 router.post(
   "/email-verification/request",

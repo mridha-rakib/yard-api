@@ -25,10 +25,25 @@ const jobSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    serviceId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     serviceType: {
       type: String,
       required: true,
       trim: true,
+    },
+    serviceCategoryId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    serviceCategoryLabel: {
+      type: String,
+      trim: true,
+      default: "",
     },
     fullName: {
       type: String,
@@ -104,6 +119,10 @@ const jobSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+    },
+    pricing: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
     photos: {
       type: [String],

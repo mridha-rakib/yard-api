@@ -31,6 +31,12 @@ const parseBoolean = (value, fallback = false) => {
   return fallback;
 };
 
+const parseList = (value) =>
+  cleanValue(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
 const resolvedNodeEnv = cleanValue(process.env.NODE_ENV, "development");
 const defaultAdminPassword = resolvedNodeEnv === "production" ? "" : "Admin@12345";
 
@@ -39,6 +45,7 @@ const env = {
   port: parseNumber(process.env.PORT, 5000),
   apiPrefix: cleanValue(process.env.API_PREFIX, "/api/v1"),
   logLevel: cleanValue(process.env.LOG_LEVEL, "info"),
+  dnsServers: parseList(process.env.DNS_SERVERS),
   mongoUri: cleanValue(process.env.MONGO_URI),
   accessTokenSecret: cleanValue(
     process.env.ACCESS_TOKEN_SECRET,

@@ -43,12 +43,26 @@ const buildConnectionHint = (error) => {
   return null;
 };
 
+const applyConfiguredDnsServers = () => {
+  if (!env.dnsServers.length) {
+    return;
+  }
+
+  dns.setServers(env.dnsServers);
+  logger.info(
+    { dnsServers: env.dnsServers },
+    "Using configured DNS servers for MongoDB lookups"
+  );
+};
+
 const connectDb = async () => {
   if (!env.mongoUri) {
     throw new Error("MONGO_URI is not configured");
   }
 
   mongoose.set("strictQuery", true);
+  applyConfiguredDnsServers();
+
   try {
     await mongoose.connect(env.mongoUri);
   } catch (error) {

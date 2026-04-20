@@ -8,36 +8,9 @@ const { hasAnyRole, hasRole } = require("../../utils/user-roles");
 const paymentRepository = require("./payment.repository");
 const jobRepository = require("../jobs/job.repository");
 const jobService = require("../jobs/job.service");
-const contentRepository = require("../content/content.repository");
 const notificationService = require("../notifications/notification.service");
+const { calculateQuote, findServiceDefinition } = require("./pricing-engine");
 
-const PRICING_CONTENT_KEY = "pricing-services";
-const DEFAULT_SERVICE_PRICES = {
-  "yard-lawn-mowing": 40,
-  "yard-weed-removal": 35,
-  "yard-leaf-cleanup": 45,
-  "yard-general-cleanup": 75,
-  "yard-hedge-trimming": 50,
-  "yard-bush-trimming": 45,
-  "yard-garden-bed-cleanup": 60,
-  "yard-mulching": 80,
-  "yard-snow-shoveling": 35,
-  "yard-storm-cleanup": 90,
-  "pet-waste-removal": 25,
-  "pet-yard-sanitizing": 40,
-  "pet-litter-cleanup": 30,
-  "vehicle-gas-filling": 15,
-  "vehicle-washer-fluid": 15,
-  "vehicle-tire-air": 15,
-  "vehicle-exterior-wash": 30,
-  "vehicle-interior-vacuuming": 25,
-  "home-trash-bin-cleaning": 25,
-  "home-pressure-washing": 80,
-  "home-gutter-removal": 60,
-  "home-window-washing": 40,
-  "home-patio-sweeping": 35,
-};
-const DEFAULT_BOOKING_AMOUNT = 45;
 const RECONCILIATION_LOCK_TIMEOUT_MS = 60 * 1000;
 
 class PaymentService {
@@ -220,19 +193,19 @@ class PaymentService {
         (sum, payment) => sum + Number(payment?.platformFee || 0),
         0
       ),
-      totalWorkerPayout: items.reduce(
+      totalHeroPayout: items.reduce(
         (sum, payment) => sum + Number(payment?.workerPayout || 0),
         0
       ),
-      totalPaidWorkerPayout: paidPayments.reduce(
+      totalPaidHeroPayout: paidPayments.reduce(
         (sum, payment) => sum + Number(payment?.workerPayout || 0),
         0
       ),
-      pendingWorkerPayout: pendingPayments.reduce(
+      pendingHeroPayout: pendingPayments.reduce(
         (sum, payment) => sum + Number(payment?.workerPayout || 0),
         0
       ),
-      currentMonthWorkerPayout: currentMonthPayments.reduce(
+      currentMonthHeroPayout: currentMonthPayments.reduce(
         (sum, payment) => sum + Number(payment?.workerPayout || 0),
         0
       ),
@@ -287,42 +260,29 @@ class PaymentService {
     return `${successUrl.origin}${successUrl.pathname}?session_id={CHECKOUT_SESSION_ID}`;
   }
 
-  async resolveCheckoutAmount(payload, normalizedJobDraft) {
+  resolveCheckoutQuote(payload, normalizedJobDraft) {
     const requestedServiceId =
       payload.jobData?.serviceId ||
       payload.serviceId ||
+      normalizedJobDraft.serviceId ||
       normalizedJobDraft.serviceType ||
       "";
-    const fallbackAmount = Number(payload.amount || normalizedJobDraft.estimatedPrice || 0);
+    const pricingInput =
+      payload.jobData?.pricingInput ||
+      payload.pricingInput ||
+      normalizedJobDraft.pricing?.input ||
+      {};
+    const quote = calculateQuote(requestedServiceId, pricingInput);
+    const service = findServiceDefinition(requestedServiceId);
 
-    try {
-      const pricingContent = await contentRepository.findByKey(PRICING_CONTENT_KEY);
-      const pricingCategories = pricingContent?.value?.categories;
-
-      if (Array.isArray(pricingCategories)) {
-        for (const category of pricingCategories) {
-          const matchedService = Array.isArray(category?.services)
-            ? category.services.find((service) => service?.id === requestedServiceId)
-            : null;
-
-          if (matchedService) {
-            const servicePrice = Number(matchedService.price || 0);
-
-            if (servicePrice > 0) {
-              return servicePrice;
-            }
-          }
-        }
-      }
-    } catch (error) {
-      logger.warn({ err: error }, "Unable to resolve live pricing content for checkout");
+    if (!service) {
+      throw new AppError("Selected service is not available for checkout", 400);
     }
 
-    if (DEFAULT_SERVICE_PRICES[requestedServiceId]) {
-      return DEFAULT_SERVICE_PRICES[requestedServiceId];
-    }
-
-    return fallbackAmount || DEFAULT_BOOKING_AMOUNT;
+    return {
+      quote,
+      service,
+    };
   }
 
   calculateAmounts(amount) {
@@ -549,7 +509,7 @@ class PaymentService {
             recipientRole: ROLES.CUSTOMER,
             category: "job",
             title: "Booking request submitted",
-            message: `"${jobTitle}" was submitted and is waiting for a worker.`,
+            message: `"${jobTitle}" was submitted and is waiting for a Hero.`,
             link: `/booking-details?jobId=${jobId}`,
             entityType: "job",
             entityId: String(jobId),
@@ -787,14 +747,23 @@ class PaymentService {
     const normalizedJobDraft = jobService.mapCreatePayload(user, payload.jobData || payload);
     jobService.validateCreatePayload(normalizedJobDraft);
 
-    const checkoutAmount = await this.resolveCheckoutAmount(payload, normalizedJobDraft);
-    const pricing = this.calculateAmounts(checkoutAmount);
+    const { quote, service } = this.resolveCheckoutQuote(payload, normalizedJobDraft);
+    const pricing = this.calculateAmounts(quote.finalPrice);
 
     if (!pricing.amount) {
       throw new AppError("A valid amount is required to create a payment session", 400);
     }
 
+    normalizedJobDraft.serviceId = service.id;
+    normalizedJobDraft.serviceType = normalizedJobDraft.serviceType || service.title;
+    normalizedJobDraft.title = normalizedJobDraft.title || service.title;
+    normalizedJobDraft.serviceCategoryId =
+      normalizedJobDraft.serviceCategoryId || service.categoryId || "";
+    normalizedJobDraft.serviceCategoryLabel =
+      normalizedJobDraft.serviceCategoryLabel || service.categoryLabel || "";
     normalizedJobDraft.estimatedPrice = pricing.amount;
+    normalizedJobDraft.priceQuoted = pricing.amount;
+    normalizedJobDraft.pricing = quote;
 
     const paymentRecord = await paymentRepository.create({
       customer: user._id,
@@ -809,6 +778,7 @@ class PaymentService {
       description: payload.description || `${normalizedJobDraft.title} booking payment`,
       metadata: {
         draftJob: normalizedJobDraft,
+        pricingQuote: quote,
       },
     });
 

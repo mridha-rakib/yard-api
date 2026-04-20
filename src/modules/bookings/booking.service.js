@@ -8,7 +8,7 @@ const paymentRepository = require("../payments/payment.repository");
 const notificationService = require("../notifications/notification.service");
 
 const getCustomerBookingLink = (jobId) => `/booking-details?jobId=${jobId}`;
-const getWorkerBookingLink = (jobId) => `/all-jobs/job-details?jobId=${jobId}`;
+const getHeroBookingLink = (jobId) => `/all-jobs/job-details?jobId=${jobId}`;
 const formatStatusLabel = (status = "") =>
   String(status || "")
     .split("_")
@@ -19,11 +19,11 @@ const formatStatusLabel = (status = "") =>
 class BookingService {
   async createBookingFromJob(worker, jobId, payload = {}) {
     if (!hasRole(worker, ROLES.WORKER) && !hasRole(worker, ROLES.ADMIN)) {
-      throw new AppError("Only workers and admins can create bookings", 403);
+      throw new AppError("Only Heroes and admins can create bookings", 403);
     }
 
     if (hasRole(worker, ROLES.WORKER) && worker.workerStatus !== "approved") {
-      throw new AppError("Your worker account is awaiting approval", 403);
+      throw new AppError("Your Hero account is awaiting approval", 403);
     }
 
     const job = await jobRepository.findById(jobId);
@@ -67,11 +67,11 @@ class BookingService {
     const hydratedBooking = await bookingRepository.findBookingWithRelations(booking._id);
     await Promise.allSettled([
       notificationService.createForUser(job.customer, {
-        type: "booking_assigned",
+        type: "booking_accepted",
         recipientRole: ROLES.CUSTOMER,
         category: "booking",
-        title: "Worker assigned to your job",
-        message: `${worker.name || "A worker"} has been assigned to "${job.title}".`,
+        title: "Hero accepted your job",
+        message: `${worker.name || "A Hero"} accepted "${job.title}".`,
         link: getCustomerBookingLink(job._id),
         entityType: "booking",
         entityId: String(booking._id),
@@ -84,11 +84,11 @@ class BookingService {
 
   async acceptAvailableJob(worker, jobId) {
     if (!hasRole(worker, ROLES.WORKER)) {
-      throw new AppError("Only workers can accept jobs", 403);
+      throw new AppError("Only Heroes can accept jobs", 403);
     }
 
     if (worker.workerStatus !== "approved") {
-      throw new AppError("Your worker account is awaiting approval", 403);
+      throw new AppError("Your Hero account is awaiting approval", 403);
     }
 
     const claimedJob = await jobRepository.claimAvailableJob(jobId, worker._id);
@@ -100,7 +100,7 @@ class BookingService {
         throw new AppError("Job not found", 404);
       }
 
-      throw new AppError("This job has already been accepted by another worker", 409);
+      throw new AppError("This job has already been accepted by another Hero", 409);
     }
 
     try {
@@ -110,7 +110,7 @@ class BookingService {
         worker: worker._id,
         scheduledDate: claimedJob.preferredDate || null,
         scheduledTime: claimedJob.preferredTime || "",
-        notes: "Created when the worker accepted the job",
+        notes: "Created when the Hero accepted the job",
         status: "assigned",
       });
 
@@ -125,10 +125,10 @@ class BookingService {
       const hydratedBooking = await bookingRepository.findBookingWithRelations(booking._id);
       await Promise.allSettled([
         notificationService.createForUser(claimedJob.customer, {
-          type: "booking_assigned",
+          type: "booking_accepted",
           recipientRole: ROLES.CUSTOMER,
           category: "booking",
-          title: "Worker assigned to your job",
+          title: "Hero accepted your job",
           message: `${worker.name} accepted "${claimedJob.title}".`,
           link: getCustomerBookingLink(claimedJob._id),
           entityType: "booking",
@@ -142,7 +142,7 @@ class BookingService {
       await jobRepository.releaseClaimedJob(claimedJob._id, worker._id);
 
       if (error?.code === 11000) {
-        throw new AppError("This job has already been accepted by another worker", 409);
+        throw new AppError("This job has already been accepted by another Hero", 409);
       }
 
       throw error;
@@ -192,12 +192,20 @@ class BookingService {
     const booking = await this.getBookingById(user, bookingId);
 
     if (!hasRole(user, ROLES.ADMIN) && String(booking.worker?._id || booking.worker) !== String(user._id)) {
-      throw new AppError("Only the assigned worker can start this booking", 403);
+      throw new AppError("Only the Hero on this booking can start this service", 403);
     }
 
     const updatedBooking = await bookingRepository.updateById(bookingId, {
       status: "in_progress",
       startedAt: new Date(),
+      workerCompletionNotes: "",
+      verificationPhotoUrls: [],
+      verificationVideoUrl: "",
+      verificationSubmittedAt: null,
+      verificationReviewedAt: null,
+      verificationApprovedAt: null,
+      verificationApprovedBy: null,
+      verificationNotes: "",
     });
 
     await jobRepository.updateById(booking.job?._id || booking.job, {
@@ -211,7 +219,7 @@ class BookingService {
         recipientRole: ROLES.CUSTOMER,
         category: "booking",
         title: "Work is now in progress",
-        message: `${user.name || "Your worker"} started work on "${refreshedBooking.job?.title || "your job"}".`,
+        message: `${user.name || "Your Hero"} started work on "${refreshedBooking.job?.title || "your job"}".`,
         link: getCustomerBookingLink(refreshedBooking.job?._id || refreshedBooking.job),
         entityType: "booking",
         entityId: String(refreshedBooking._id),
@@ -222,16 +230,111 @@ class BookingService {
     return refreshedBooking;
   }
 
-  async completeBooking(user, bookingId) {
+  async completeBooking(user, bookingId, payload = {}) {
     const booking = await this.getBookingById(user, bookingId);
 
     if (!hasRole(user, ROLES.ADMIN) && String(booking.worker?._id || booking.worker) !== String(user._id)) {
-      throw new AppError("Only the assigned worker can complete this booking", 403);
+      throw new AppError("Only the Hero on this booking can complete this service", 403);
+    }
+
+    const verificationPhotoUrls = Array.isArray(payload.verificationPhotoUrls)
+      ? payload.verificationPhotoUrls.filter(Boolean)
+      : [];
+    const verificationVideoUrl = String(payload.verificationVideoUrl || "").trim();
+
+    if (!verificationPhotoUrls.length) {
+      throw new AppError("A verification photo is required before completion review", 400);
+    }
+
+    if (!verificationVideoUrl) {
+      throw new AppError("A verification video is required before completion review", 400);
     }
 
     const updatedBooking = await bookingRepository.updateById(bookingId, {
-      status: "completed",
+      status: "pending_verification",
       completedAt: new Date(),
+      workerCompletionNotes: String(payload.workerCompletionNotes || "").trim(),
+      verificationPhotoUrls,
+      verificationVideoUrl,
+      verificationSubmittedAt: new Date(),
+      verificationReviewedAt: null,
+      verificationApprovedAt: null,
+      verificationApprovedBy: null,
+      verificationNotes: String(payload.verificationNotes || "").trim(),
+    });
+
+    await jobRepository.updateById(booking.job?._id || booking.job, {
+      status: "pending_verification",
+    });
+
+    const refreshedBooking = await bookingRepository.findBookingWithRelations(updatedBooking._id);
+    const jobId = refreshedBooking.job?._id || refreshedBooking.job;
+    const jobTitle = refreshedBooking.job?.title || "your job";
+
+    await Promise.allSettled([
+      notificationService.createForUser(refreshedBooking.customer, {
+        type: "booking_pending_verification",
+        recipientRole: ROLES.CUSTOMER,
+        category: "booking",
+        title: "Job proof submitted for review",
+        message: `"${jobTitle}" was marked complete and is now waiting for YardHero verification.`,
+        link: getCustomerBookingLink(jobId),
+        entityType: "booking",
+        entityId: String(refreshedBooking._id),
+        actorUserId: user._id,
+      }),
+      notificationService.createForUser(refreshedBooking.worker, {
+        type: "booking_pending_verification",
+        recipientRole: ROLES.WORKER,
+        category: "booking",
+        title: "Completion proof submitted",
+        message: `You submitted photo and video proof for "${jobTitle}". Payment will be released after admin approval.`,
+        link: getHeroBookingLink(jobId),
+        entityType: "booking",
+        entityId: String(refreshedBooking._id),
+        actorUserId: user._id,
+      }),
+      notificationService.notifyAdmins(
+        {
+          type: "booking_pending_verification",
+          category: "booking",
+          title: "Job awaiting verification",
+          message: `${refreshedBooking.worker?.name || "A Hero"} submitted proof for "${jobTitle}".`,
+          link: `/booking/${jobId}`,
+          entityType: "booking",
+          entityId: String(refreshedBooking._id),
+          actorUserId: user._id,
+        },
+        {
+          preferenceKey: "serviceCompletions",
+        }
+      ),
+    ]);
+
+    return refreshedBooking;
+  }
+
+  async approveCompletionByAdmin(adminUser, bookingId, payload = {}) {
+    if (!hasRole(adminUser, ROLES.ADMIN)) {
+      throw new AppError("Only admins can approve booking completion", 403);
+    }
+
+    const booking = await bookingRepository.findBookingWithRelations(bookingId);
+
+    if (!booking) {
+      throw new AppError("Booking not found", 404);
+    }
+
+    if (booking.status !== "pending_verification") {
+      throw new AppError("This booking is not waiting for verification approval", 400);
+    }
+
+    const updatedBooking = await bookingRepository.updateById(bookingId, {
+      status: "approved",
+      verificationReviewedAt: new Date(),
+      verificationApprovedAt: new Date(),
+      verificationApprovedBy: adminUser._id,
+      verificationNotes: String(payload.reviewNotes || booking.verificationNotes || "").trim(),
     });
 
     await jobRepository.updateById(booking.job?._id || booking.job, {
@@ -243,68 +346,44 @@ class BookingService {
     const paymentCapture = await paymentService.captureAuthorizedPaymentForBooking(
       refreshedBooking,
       {
-        completedByUserId: String(user._id),
+        approvedByUserId: String(adminUser._id),
       }
     );
     const jobId = refreshedBooking.job?._id || refreshedBooking.job;
     const jobTitle = refreshedBooking.job?.title || "your job";
     const paymentStatus = String(paymentCapture?.status || "").trim().toLowerCase();
-    const customerNotification =
-      paymentStatus === "failed"
-        ? {
-            title: "Job completed, payment needs attention",
-            message: `"${jobTitle}" was marked complete, but the payment needs manual review.`,
-          }
-        : paymentStatus === "paid" || paymentStatus === "already_paid"
-          ? {
-              title: "Job completed successfully",
-              message: `"${jobTitle}" was completed and payment was captured successfully.`,
-            }
-          : {
-              title: "Job completed successfully",
-              message: `"${jobTitle}" was marked complete.`,
-            };
-    const workerNotification =
-      paymentStatus === "failed"
-        ? {
-            title: "Job completed, payment needs attention",
-            message: `You completed "${jobTitle}", but the payment needs manual review.`,
-            link: "/payment",
-          }
-        : paymentStatus === "paid" || paymentStatus === "already_paid"
-          ? {
-              title: "Job completed and payment captured",
-              message: `You completed "${jobTitle}" and the payment was captured successfully.`,
-              link: "/payment",
-            }
-          : {
-              title: "Job completed",
-              message: `You completed "${jobTitle}".`,
-              link: getWorkerBookingLink(jobId),
-            };
 
     await Promise.allSettled([
       notificationService.createForUser(refreshedBooking.customer, {
-        type: "booking_completed",
+        type: "booking_approved",
         recipientRole: ROLES.CUSTOMER,
         category: "booking",
-        title: customerNotification.title,
-        message: customerNotification.message,
+        title: "Job approved by YardHero",
+        message:
+          paymentStatus === "failed"
+            ? `"${jobTitle}" was approved, but payment needs manual attention.`
+            : `"${jobTitle}" passed verification and has been closed successfully.`,
         link: getCustomerBookingLink(jobId),
         entityType: "booking",
         entityId: String(refreshedBooking._id),
-        actorUserId: user._id,
+        actorUserId: adminUser._id,
       }),
       notificationService.createForUser(refreshedBooking.worker, {
-        type: "booking_completed",
+        type: "booking_approved",
         recipientRole: ROLES.WORKER,
         category: "booking",
-        title: workerNotification.title,
-        message: workerNotification.message,
-        link: workerNotification.link,
+        title:
+          paymentStatus === "failed"
+            ? "Job approved, payout needs attention"
+            : "Job approved and payout released",
+        message:
+          paymentStatus === "failed"
+            ? `Your work on "${jobTitle}" was approved, but the payout needs manual review.`
+            : `Your work on "${jobTitle}" was approved and the payout was released.`,
+        link: "/payment",
         entityType: "booking",
         entityId: String(refreshedBooking._id),
-        actorUserId: user._id,
+        actorUserId: adminUser._id,
       }),
       ...(paymentStatus === "failed"
         ? [
@@ -312,35 +391,19 @@ class BookingService {
               {
                 type: "payment_issue",
                 category: "payment",
-                title: "Payment capture failed",
-                message: `Payment capture failed after "${jobTitle}" was completed.`,
-                link: `/payments`,
+                title: "Approved job needs payment review",
+                message: `Payment capture failed after approval for "${jobTitle}".`,
+                link: "/payments",
                 entityType: "booking",
                 entityId: String(refreshedBooking._id),
-                actorUserId: user._id,
+                actorUserId: adminUser._id,
               },
               {
                 preferenceKey: "paymentIssues",
               }
             ),
           ]
-        : [
-            notificationService.notifyAdmins(
-              {
-                type: "booking_completed",
-                category: "booking",
-                title: "Service completed",
-                message: `${refreshedBooking.worker?.name || "A worker"} completed "${jobTitle}".`,
-                link: `/booking/${jobId}`,
-                entityType: "booking",
-                entityId: String(refreshedBooking._id),
-                actorUserId: user._id,
-              },
-              {
-                preferenceKey: "serviceCompletions",
-              }
-            ),
-          ]),
+        : []),
     ]);
 
     return {
@@ -399,7 +462,7 @@ class BookingService {
             category: "booking",
             title: "Booking cancelled",
             message: `${actorLabel} cancelled "${jobTitle}".`,
-            link: getWorkerBookingLink(jobId),
+            link: getHeroBookingLink(jobId),
             entityType: "booking",
             entityId: String(refreshedBooking._id),
             actorUserId: user._id,
@@ -430,13 +493,25 @@ class BookingService {
       throw new AppError("Booking not found", 404);
     }
 
+    if (status === "approved") {
+      throw new AppError("Use the approval action to release payment for this booking", 400);
+    }
+
     const update = { status };
 
     if (status === "in_progress") {
       update.startedAt = new Date();
+      update.workerCompletionNotes = "";
+      update.verificationPhotoUrls = [];
+      update.verificationVideoUrl = "";
+      update.verificationSubmittedAt = null;
+      update.verificationReviewedAt = null;
+      update.verificationApprovedAt = null;
+      update.verificationApprovedBy = null;
+      update.verificationNotes = "";
     }
 
-    if (status === "completed") {
+    if (status === "completed" || status === "pending_verification") {
       update.completedAt = new Date();
     }
 
@@ -449,6 +524,7 @@ class BookingService {
     const jobStatusMap = {
       assigned: "assigned",
       in_progress: "in_progress",
+      pending_verification: "pending_verification",
       completed: "completed",
       cancelled: "cancelled",
     };
@@ -479,7 +555,7 @@ class BookingService {
         category: "booking",
         title: "Booking updated by admin",
         message: `Admin changed "${refreshedBooking.job?.title || "your booking"}" to ${statusLabel}.`,
-        link: getWorkerBookingLink(jobId),
+        link: getHeroBookingLink(jobId),
         entityType: "booking",
         entityId: String(refreshedBooking._id),
         actorUserId: adminUser._id,

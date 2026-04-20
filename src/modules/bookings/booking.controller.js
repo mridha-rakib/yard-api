@@ -31,14 +31,27 @@ class BookingController {
   }
 
   async completeBooking(req, res) {
-    const result = await bookingService.completeBooking(req.user, req.params.bookingId);
+    const result = await bookingService.completeBooking(
+      req.user,
+      req.params.bookingId,
+      req.body
+    );
+    const message = "Completion proof submitted for review";
+
+    res.json({ success: true, message, data: result });
+  }
+
+  async approveCompletion(req, res) {
+    const result = await bookingService.approveCompletionByAdmin(
+      req.user,
+      req.params.bookingId,
+      req.body
+    );
     const captureStatus = result?.paymentCapture?.status || "";
     const message =
       captureStatus === "failed" || captureStatus === "payment_not_found"
-        ? "Booking completed, but payment needs review"
-        : ["paid", "already_paid"].includes(captureStatus)
-          ? "Booking completed and payment captured"
-          : "Booking completed";
+        ? "Completion approved, but payment needs review"
+        : "Completion approved and payout released";
 
     res.json({ success: true, message, data: result });
   }

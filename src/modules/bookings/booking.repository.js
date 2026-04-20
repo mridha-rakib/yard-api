@@ -22,7 +22,11 @@ class BookingRepository extends BaseRepository {
         },
         {
           path: "worker",
-          select: "name email phone skills profilePhotoUrl",
+          select: "name email phone skills profilePhotoUrl workerBio portfolioItems",
+        },
+        {
+          path: "verificationApprovedBy",
+          select: "name email",
         },
       ],
     });

@@ -455,7 +455,7 @@ class AuthService {
     });
   }
 
-  async registerWorker(payload, sessionMetadata = {}, currentUser = null) {
+  async registerHero(payload, sessionMetadata = {}, currentUser = null) {
     const {
       fullName,
       name,
@@ -492,19 +492,19 @@ class AuthService {
 
     if (existingUser) {
       if (hasRole(existingUser, ROLES.ADMIN)) {
-        throw new AppError("Admin accounts cannot be converted into worker accounts", 403);
+        throw new AppError("Admin accounts cannot be converted into Hero accounts", 403);
       }
 
       if (normalizedEmail !== existingUser.email) {
         throw new AppError(
-          "Use the same email address on your existing account to become a worker",
+          "Use the same email address on your existing account to become a Hero",
           400
         );
       }
 
       if (resolvedPhone !== existingUser.phone) {
         throw new AppError(
-          "Use the same phone number on your existing account to become a worker",
+          "Use the same phone number on your existing account to become a Hero",
           400
         );
       }
@@ -555,7 +555,7 @@ class AuthService {
       });
     } else {
       const temporaryPassword =
-        password || `WorkerTemp#${Math.random().toString(36).slice(2, 10)}`;
+        password || `HeroTemp#${Math.random().toString(36).slice(2, 10)}`;
 
       this.assertValidPassword(temporaryPassword);
       generatedPassword = password ? null : temporaryPassword;
@@ -601,12 +601,12 @@ class AuthService {
         category: "account",
         title:
           user.workerStatus === "approved"
-            ? "Worker account active"
-            : "Worker registration submitted",
+            ? "Hero account active"
+            : "Hero application submitted",
         message:
           user.workerStatus === "approved"
-            ? "Your worker account is active and ready for new jobs."
-            : "Your worker registration was submitted and is now waiting for admin review.",
+            ? "Your Hero account is active and ready for new jobs."
+            : "Your Hero application was submitted and is now waiting for admin review.",
         link: user.workerStatus === "approved" ? "/worker-home" : "/registration",
         entityType: "user",
         entityId: String(user._id),
@@ -615,8 +615,8 @@ class AuthService {
         {
           type: "worker_registered",
           category: "account",
-          title: "New worker registration",
-          message: `${user.name} submitted a worker registration${existingUser ? " from an existing account" : ""}.`,
+          title: "New Hero application",
+          message: `${user.name} submitted a Hero application${existingUser ? " from an existing account" : ""}.`,
           link: "/workers",
           entityType: "user",
           entityId: String(user._id),

@@ -11,11 +11,12 @@ class PaymentRepository extends BaseRepository {
       {
         path: "job",
         select:
-          "title serviceType streetAddress city zipCode status paymentStatus estimatedPrice preferredDate preferredTime",
+          "title serviceType serviceId serviceCategoryLabel streetAddress city zipCode status paymentStatus estimatedPrice preferredDate preferredTime pricing",
       },
       {
         path: "booking",
-        select: "status scheduledDate scheduledTime completedAt",
+        select:
+          "status scheduledDate scheduledTime completedAt verificationSubmittedAt verificationApprovedAt verificationPhotoUrls verificationVideoUrl verificationNotes",
       },
       {
         path: "customer",

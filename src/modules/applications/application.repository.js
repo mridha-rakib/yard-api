@@ -6,7 +6,7 @@ class ApplicationRepository extends BaseRepository {
     super(Application);
   }
 
-  findByJobAndWorker(jobId, workerId) {
+  findByJobAndHero(jobId, workerId) {
     return this.findOne({ job: jobId, worker: workerId });
   }
 
@@ -29,7 +29,7 @@ class ApplicationRepository extends BaseRepository {
     );
   }
 
-  listByWorker(workerId, options = {}) {
+  listByHero(workerId, options = {}) {
     return this.paginate(
       { worker: workerId },
       {

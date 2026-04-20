@@ -43,7 +43,8 @@ class JobRepository extends BaseRepository {
         },
         {
           path: "assignedWorker",
-          select: "name email phone workerStatus skills profilePhotoUrl availability",
+          select:
+            "name email phone workerStatus skills profilePhotoUrl availability workerBio portfolioItems",
         },
       ],
     });

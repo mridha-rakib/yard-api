@@ -8,6 +8,23 @@ const { hasRole } = require("../../utils/user-roles");
 const userRepository = require("./user.repository");
 
 class UserService {
+  normalizePortfolioItems(items = []) {
+    if (!Array.isArray(items)) {
+      return [];
+    }
+
+    return items
+      .map((item, index) => ({
+        id: String(item?.id || `portfolio-${index + 1}`).trim(),
+        title: String(item?.title || "").trim(),
+        description: String(item?.description || "").trim(),
+        serviceType: String(item?.serviceType || "").trim(),
+        imageUrl: String(item?.imageUrl || "").trim(),
+        completedAt: item?.completedAt ? new Date(item.completedAt) : null,
+      }))
+      .filter((item) => item.imageUrl);
+  }
+
   async getProfile(userId) {
     const user = await userRepository.findById(userId);
 
@@ -35,6 +52,10 @@ class UserService {
     if (payload.phone !== undefined) update.phone = payload.phone;
     if (payload.age !== undefined) update.age = payload.age;
     if (payload.skills !== undefined) update.skills = payload.skills;
+    if (payload.workerBio !== undefined) update.workerBio = payload.workerBio;
+    if (payload.portfolioItems !== undefined) {
+      update.portfolioItems = this.normalizePortfolioItems(payload.portfolioItems);
+    }
     if (payload.profilePhotoUrl !== undefined) update.profilePhotoUrl = payload.profilePhotoUrl;
     if (payload.idDocumentUrl !== undefined) update.idDocumentUrl = payload.idDocumentUrl;
 

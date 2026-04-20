@@ -10,11 +10,11 @@ const notificationService = require("../notifications/notification.service");
 class ApplicationService {
   async applyToJob(worker, jobId, payload = {}) {
     if (!hasRole(worker, ROLES.WORKER)) {
-      throw new AppError("Only workers can apply to jobs", 403);
+      throw new AppError("Only Heroes can apply to jobs", 403);
     }
 
     if (worker.workerStatus !== "approved") {
-      throw new AppError("Your worker account is awaiting approval", 403);
+      throw new AppError("Your Hero account is awaiting approval", 403);
     }
 
     const job = await jobRepository.findById(jobId);
@@ -27,7 +27,7 @@ class ApplicationService {
       throw new AppError("This job is no longer open for applications", 400);
     }
 
-    const existingApplication = await applicationRepository.findByJobAndWorker(jobId, worker._id);
+    const existingApplication = await applicationRepository.findByJobAndHero(jobId, worker._id);
     if (existingApplication) {
       throw new AppError("You have already applied to this job", 409);
     }
@@ -53,7 +53,7 @@ class ApplicationService {
       notificationService.notifyAdmins({
         type: "job_application_received",
         category: "application",
-        title: "New worker application",
+        title: "New Hero application",
         message: `${worker.name} applied to customer job "${job.title}".`,
         link: `/booking/${job._id}`,
         entityType: "application",
@@ -92,11 +92,11 @@ class ApplicationService {
 
   async listMyApplications(worker, query = {}) {
     if (!hasRole(worker, ROLES.WORKER)) {
-      throw new AppError("Only workers can view their applications", 403);
+      throw new AppError("Only Heroes can view their applications", 403);
     }
 
     const pagination = buildPagination(query);
-    return applicationRepository.listByWorker(worker._id, pagination);
+    return applicationRepository.listByHero(worker._id, pagination);
   }
 
   async updateApplicationStatus(user, applicationId, status) {
@@ -175,7 +175,7 @@ class ApplicationService {
               recipientRole: ROLES.WORKER,
               category: "application",
               title: "Application update",
-              message: `Another worker was selected for "${job.title}".`,
+              message: `Another Hero was selected for "${job.title}".`,
               link: `/all-jobs/job-details?jobId=${job._id}`,
               entityType: "application",
               entityId: String(application._id),
