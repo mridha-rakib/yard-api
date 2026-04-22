@@ -84,6 +84,15 @@ const env = {
     process.env.STRIPE_REPAIR_STARTUP_DELAY_MS,
     5000
   ),
+  stripeConnectDefaultCountry: cleanValue(process.env.STRIPE_CONNECT_DEFAULT_COUNTRY, "US")
+    .toUpperCase()
+    .slice(0, 2),
+  awsRegion: cleanValue(process.env.AWS_REGION),
+  awsAccessKeyId: cleanValue(process.env.AWS_ACCESS_KEY_ID),
+  awsSecretAccessKey: cleanValue(process.env.AWS_SECRET_ACCESS_KEY),
+  awsS3Bucket: cleanValue(process.env.AWS_S3_BUCKET),
+  awsS3PublicBaseUrl: cleanValue(process.env.AWS_S3_PUBLIC_BASE_URL),
+  awsS3Prefix: cleanValue(process.env.AWS_S3_PREFIX, "proof-media"),
   defaultPlatformFeePercentage: parseNumber(process.env.DEFAULT_PLATFORM_FEE_PERCENTAGE, 12),
   adminName: cleanValue(process.env.ADMIN_NAME, "John Administrator"),
   adminEmail: cleanValue(process.env.ADMIN_EMAIL, "admin@yardworkpro.com").toLowerCase(),

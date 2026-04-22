@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const Stripe = require("stripe");
 const env = require("../../config/env");
 const logger = require("../../config/logger");
@@ -5,18 +6,27 @@ const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const { ROLES } = require("../../constants/roles");
 const { hasAnyRole, hasRole } = require("../../utils/user-roles");
+const { isWorkerPayoutReady } = require("../../utils/worker-payouts");
 const paymentRepository = require("./payment.repository");
 const jobRepository = require("../jobs/job.repository");
 const jobService = require("../jobs/job.service");
 const notificationService = require("../notifications/notification.service");
+const userRepository = require("../users/user.repository");
 const { calculateQuote, findServiceDefinition } = require("./pricing-engine");
+const stripeWebhookEventRepository = require("./stripe-webhook-event.repository");
 
 const RECONCILIATION_LOCK_TIMEOUT_MS = 60 * 1000;
+const REUSABLE_PENDING_CHECKOUT_WINDOW_MS = 10 * 60 * 1000;
+const WEBHOOK_EVENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+const WEBHOOK_EVENT_BATCH_SIZE = 10;
+const WEBHOOK_EVENT_INTERVAL_MS = 15 * 1000;
 
 class PaymentService {
   constructor() {
     this.repairIntervalHandle = null;
     this.repairRunInProgress = false;
+    this.webhookIntervalHandle = null;
+    this.webhookRunInProgress = false;
   }
 
   normalizeStatusFilter(status = "") {
@@ -57,7 +67,7 @@ class PaymentService {
   }
 
   getPaymentTimestamp(payment) {
-    return payment?.paidAt || payment?.authorizedAt || payment?.createdAt || null;
+    return payment?.refundedAt || payment?.paidAt || payment?.authorizedAt || payment?.createdAt || null;
   }
 
   isInCurrentMonth(value) {
@@ -129,6 +139,8 @@ class PaymentService {
       payment?.customer?.name,
       payment?.customer?.email,
       payment?.description,
+      payment?.stripeLatestRefundId,
+      payment?.stripeDisputeId,
     ]
       .filter(Boolean)
       .map((value) => String(value).toLowerCase());
@@ -229,6 +241,38 @@ class PaymentService {
     return new Stripe(env.stripeSecretKey);
   }
 
+  constructStripeWebhookEvent(rawBody, signature) {
+    if (!env.stripeWebhookSecret) {
+      throw new AppError("Stripe webhook secret is not configured", 500);
+    }
+
+    try {
+      return this.getStripeClient().webhooks.constructEvent(
+        rawBody,
+        signature,
+        env.stripeWebhookSecret
+      );
+    } catch (error) {
+      logger.error({ err: error }, "Stripe webhook signature validation failed");
+      throw new AppError(`Webhook Error: ${error.message}`, 400);
+    }
+  }
+
+  async enqueueStripeWebhookEvent(rawBody, signature) {
+    const event = this.constructStripeWebhookEvent(rawBody, signature);
+    const storedEvent = await stripeWebhookEventRepository.upsertPendingEvent(event);
+
+    setImmediate(() => {
+      this.processPendingStripeWebhookEvents("enqueue");
+    });
+
+    return {
+      received: true,
+      eventId: storedEvent.stripeEventId,
+      eventType: storedEvent.type,
+    };
+  }
+
   getClientOrigin() {
     return new URL(env.clientUrl).origin;
   }
@@ -258,6 +302,19 @@ class PaymentService {
   buildCheckoutSuccessUrl() {
     const successUrl = new URL("/book/success", env.clientUrl);
     return `${successUrl.origin}${successUrl.pathname}?session_id={CHECKOUT_SESSION_ID}`;
+  }
+
+  isAuthorizationExpired(paymentIntent = null, payment = null) {
+    const expiresAt =
+      this.getStripeCaptureExpiry(paymentIntent) ||
+      payment?.authorizationExpiresAt ||
+      null;
+
+    if (!expiresAt) {
+      return false;
+    }
+
+    return new Date(expiresAt).getTime() <= Date.now();
   }
 
   resolveCheckoutQuote(payload, normalizedJobDraft) {
@@ -340,6 +397,414 @@ class PaymentService {
     return Math.max(0, Number(env.stripeRepairMinAgeMs) || 0);
   }
 
+  buildTransferGroup(paymentId) {
+    return `payment_${paymentId}`;
+  }
+
+  getLatestChargeId(paymentIntent) {
+    if (!paymentIntent?.latest_charge) {
+      return "";
+    }
+
+    return typeof paymentIntent.latest_charge === "string"
+      ? paymentIntent.latest_charge
+      : String(paymentIntent.latest_charge.id || "");
+  }
+
+  getRefundedAmount(payment) {
+    const refundedAmount = Number(payment?.stripeRefundAmount || 0);
+    return Number.isFinite(refundedAmount) ? refundedAmount : 0;
+  }
+
+  getRemainingRefundableAmount(payment) {
+    const totalAmount = Number(payment?.amount || 0);
+    return Math.max(0, Number((totalAmount - this.getRefundedAmount(payment)).toFixed(2)));
+  }
+
+  isFullyRefunded(payment, refundedAmount = this.getRefundedAmount(payment)) {
+    const totalAmount = Number(payment?.amount || 0);
+    return totalAmount > 0 && refundedAmount >= totalAmount - 0.000001;
+  }
+
+  getStripeRefundTimestamp(refund) {
+    if (!refund?.created) {
+      return null;
+    }
+
+    const refundDate = new Date(Number(refund.created) * 1000);
+    return Number.isNaN(refundDate.getTime()) ? null : refundDate;
+  }
+
+  getStripeDisputeEvidenceDueDate(dispute) {
+    if (!dispute?.evidence_details?.due_by) {
+      return null;
+    }
+
+    const dueDate = new Date(Number(dispute.evidence_details.due_by) * 1000);
+    return Number.isNaN(dueDate.getTime()) ? null : dueDate;
+  }
+
+  normalizeRefundReason(reason = "") {
+    const normalizedReason = String(reason || "").trim().toLowerCase();
+    const allowedReasons = ["duplicate", "fraudulent", "requested_by_customer"];
+
+    return allowedReasons.includes(normalizedReason) ? normalizedReason : "requested_by_customer";
+  }
+
+  getChargeIdFromRefund(refund) {
+    return String(refund?.charge || "").trim();
+  }
+
+  getChargeIdFromDispute(dispute) {
+    return String(dispute?.charge || "").trim();
+  }
+
+  isDisputeActionable(disputeStatus = "") {
+    return ["warning_needs_response", "warning_under_review", "needs_response"].includes(
+      String(disputeStatus || "").trim().toLowerCase()
+    );
+  }
+
+  buildDisputeEvidencePayload(payment, payload = {}) {
+    const booking = payment?.booking || {};
+    const job = payment?.job || {};
+    const customer = payment?.customer || {};
+    const defaultServiceDate =
+      booking?.completedAt ||
+      booking?.scheduledDate ||
+      job?.preferredDate ||
+      payment?.paidAt ||
+      null;
+
+    const normalizedEvidence = {
+      customer_name: String(payload.customerName || customer?.name || "").trim(),
+      customer_email_address: String(payload.customerEmail || customer?.email || "").trim(),
+      product_description: String(
+        payload.productDescription || job?.title || job?.serviceType || payment?.description || ""
+      ).trim(),
+      service_date: defaultServiceDate
+        ? new Date(defaultServiceDate).toISOString().slice(0, 10)
+        : "",
+      uncategorized_text: String(payload.summary || payload.uncategorizedText || "").trim(),
+    };
+
+    return Object.fromEntries(
+      Object.entries(normalizedEvidence).filter(([, value]) => Boolean(String(value || "").trim()))
+    );
+  }
+
+  buildCheckoutFingerprint(userId, normalizedJobDraft, pricing, currency = "USD") {
+    const fingerprintPayload = {
+      customerId: String(userId || ""),
+      serviceId: String(normalizedJobDraft?.serviceId || ""),
+      title: String(normalizedJobDraft?.title || ""),
+      streetAddress: String(normalizedJobDraft?.streetAddress || ""),
+      city: String(normalizedJobDraft?.city || ""),
+      state: String(normalizedJobDraft?.state || ""),
+      zipCode: String(normalizedJobDraft?.zipCode || ""),
+      jobDescription: String(normalizedJobDraft?.jobDescription || ""),
+      preferredDate: normalizedJobDraft?.preferredDate
+        ? new Date(normalizedJobDraft.preferredDate).toISOString()
+        : "",
+      preferredTime: String(normalizedJobDraft?.preferredTime || ""),
+      amount: Number(pricing?.amount || 0),
+      currency: String(currency || "USD").toUpperCase(),
+    };
+
+    return crypto
+      .createHash("sha256")
+      .update(JSON.stringify(fingerprintPayload))
+      .digest("hex");
+  }
+
+  isRecentPendingCheckout(payment) {
+    if (!payment?.createdAt) {
+      return false;
+    }
+
+    return (
+      Date.now() - new Date(payment.createdAt).getTime() <= REUSABLE_PENDING_CHECKOUT_WINDOW_MS
+    );
+  }
+
+  async findReusableCheckoutAttempt(userId, checkoutFingerprint) {
+    if (!userId || !checkoutFingerprint) {
+      return null;
+    }
+
+    return paymentRepository.findOne(
+      {
+        customer: userId,
+        status: { $in: ["pending", "failed"] },
+        job: null,
+        booking: null,
+        "metadata.checkoutFingerprint": checkoutFingerprint,
+      },
+      {
+        sort: { createdAt: -1 },
+      }
+    );
+  }
+
+  async findPaymentForCheckoutSession(session) {
+    if (!session?.id) {
+      return null;
+    }
+
+    const existingBySessionId = await paymentRepository.findBySessionId(session.id);
+
+    if (existingBySessionId) {
+      return existingBySessionId;
+    }
+
+    const paymentRecordId = session?.metadata?.paymentRecordId;
+
+    if (!paymentRecordId) {
+      return null;
+    }
+
+    const payment = await paymentRepository.findById(paymentRecordId);
+
+    if (!payment) {
+      return null;
+    }
+
+    const backfillUpdate = {};
+
+    if (!payment.stripeCheckoutSessionId) {
+      backfillUpdate.stripeCheckoutSessionId = session.id;
+    }
+
+    if (!payment.checkoutUrl && session.url) {
+      backfillUpdate.checkoutUrl = session.url;
+    }
+
+    if (Object.keys(backfillUpdate).length) {
+      return paymentRepository.updateById(payment._id, backfillUpdate);
+    }
+
+    return payment;
+  }
+
+  async findPaymentForPaymentIntent(paymentIntent) {
+    if (!paymentIntent?.id) {
+      return null;
+    }
+
+    let payment = await paymentRepository.findOne({
+      stripePaymentIntentId: paymentIntent.id,
+    });
+
+    if (!payment && paymentIntent?.metadata?.paymentRecordId) {
+      payment = await paymentRepository.findById(paymentIntent.metadata.paymentRecordId);
+    }
+
+    if (!payment) {
+      return null;
+    }
+
+    const backfillUpdate = {};
+
+    if (!payment.stripePaymentIntentId) {
+      backfillUpdate.stripePaymentIntentId = paymentIntent.id;
+    }
+
+    if (!payment.stripeCustomerId && paymentIntent.customer) {
+      backfillUpdate.stripeCustomerId = paymentIntent.customer;
+    }
+
+    if (!payment.stripePaymentMethodId && paymentIntent.payment_method) {
+      backfillUpdate.stripePaymentMethodId = paymentIntent.payment_method;
+    }
+
+    if (!payment.stripeTransferGroup && paymentIntent.transfer_group) {
+      backfillUpdate.stripeTransferGroup = paymentIntent.transfer_group;
+    }
+
+    const latestChargeId = this.getLatestChargeId(paymentIntent);
+
+    if (!payment.stripeChargeId && latestChargeId) {
+      backfillUpdate.stripeChargeId = latestChargeId;
+    }
+
+    if (Object.keys(backfillUpdate).length) {
+      return paymentRepository.updateById(payment._id, backfillUpdate);
+    }
+
+    return payment;
+  }
+
+  async findPaymentForChargeId(chargeId) {
+    const normalizedChargeId = String(chargeId || "").trim();
+
+    if (!normalizedChargeId) {
+      return null;
+    }
+
+    let payment = await paymentRepository.findByChargeId(normalizedChargeId);
+
+    if (payment) {
+      return payment;
+    }
+
+    const stripe = this.getStripeClient();
+    const charge = await stripe.charges.retrieve(normalizedChargeId);
+
+    if (!charge?.payment_intent) {
+      return null;
+    }
+
+    payment = await this.findPaymentForPaymentIntent({
+      id: charge.payment_intent,
+      customer: charge.customer || "",
+      payment_method: charge.payment_method || "",
+      transfer_group: charge.transfer_group || "",
+      latest_charge: charge.id,
+      metadata: charge.metadata || {},
+    });
+
+    return payment;
+  }
+
+  async ensureWorkerTransferForPaidPayment(payment, paymentIntent = null, context = {}) {
+    if (!payment?._id) {
+      return {
+        status: "payment_not_found",
+      };
+    }
+
+    const latestPayment = await paymentRepository.findById(payment._id);
+
+    if (!latestPayment) {
+      return {
+        status: "payment_not_found",
+      };
+    }
+
+    if (latestPayment.stripeTransferId) {
+      return {
+        status: "already_transferred",
+        transferId: latestPayment.stripeTransferId,
+      };
+    }
+
+    if (latestPayment.status !== "paid") {
+      return {
+        status: "payment_not_paid",
+      };
+    }
+
+    if (!latestPayment.worker) {
+      await paymentRepository.updateById(latestPayment._id, {
+        workerTransferStatus: "not_ready",
+        workerLastPayoutFailure: "No worker is assigned to this payment yet",
+      });
+
+      return {
+        status: "worker_not_assigned",
+      };
+    }
+
+    const worker = await userRepository.findById(latestPayment.worker);
+
+    if (!worker || !worker.stripeConnectedAccountId || !isWorkerPayoutReady(worker)) {
+      await paymentRepository.updateById(latestPayment._id, {
+        workerTransferStatus: "not_ready",
+        workerLastPayoutFailure:
+          "The assigned worker must finish Stripe payout onboarding before payout release",
+      });
+
+      return {
+        status: "worker_not_ready",
+      };
+    }
+
+    let resolvedPaymentIntent = paymentIntent;
+
+    if (!resolvedPaymentIntent && latestPayment.stripePaymentIntentId) {
+      resolvedPaymentIntent = await this.retrievePaymentIntent(latestPayment.stripePaymentIntentId);
+    }
+
+    const sourceChargeId = this.getLatestChargeId(resolvedPaymentIntent);
+
+    if (!sourceChargeId) {
+      await paymentRepository.updateById(latestPayment._id, {
+        workerTransferStatus: "failed",
+        workerTransferFailedAt: new Date(),
+        workerLastPayoutFailure:
+          "Stripe charge details were not available for worker transfer creation",
+      });
+
+      return {
+        status: "charge_not_ready",
+      };
+    }
+
+    const transferGroup = latestPayment.stripeTransferGroup || this.buildTransferGroup(latestPayment._id);
+
+    try {
+      const transfer = await this.getStripeClient().transfers.create(
+        {
+          amount: Math.round(Number(latestPayment.workerPayout || 0) * 100),
+          currency: String(latestPayment.currency || "usd").toLowerCase(),
+          destination: worker.stripeConnectedAccountId,
+          source_transaction: sourceChargeId,
+          transfer_group: transferGroup,
+          metadata: {
+            paymentRecordId: String(latestPayment._id),
+            bookingId: String(latestPayment.booking || ""),
+            jobId: String(latestPayment.job || ""),
+            workerId: String(worker._id),
+            approvedByUserId: String(context.approvedByUserId || ""),
+          },
+        },
+        {
+          idempotencyKey: `worker_transfer_${latestPayment._id}`,
+        }
+      );
+
+      await paymentRepository.updateById(latestPayment._id, {
+        stripeTransferId: transfer.id,
+        stripeTransferAmount: Number((Number(transfer.amount || 0) / 100).toFixed(2)),
+        stripeTransferDestinationAccountId: worker.stripeConnectedAccountId,
+        stripeTransferGroup: transfer.transfer_group || transferGroup,
+        workerTransferStatus: "transferred",
+        workerTransferredAt: new Date(),
+        workerTransferFailedAt: null,
+        workerLastPayoutFailure: "",
+      });
+
+      return {
+        status: "transferred",
+        transferId: transfer.id,
+      };
+    } catch (error) {
+      const errorMessage = this.normalizeRepairErrorMessage(error);
+
+      await paymentRepository.updateById(latestPayment._id, {
+        stripeTransferGroup: transferGroup,
+        workerTransferStatus: "failed",
+        workerTransferFailedAt: new Date(),
+        workerLastPayoutFailure: errorMessage,
+      });
+
+      logger.error(
+        {
+          err: error,
+          paymentId: latestPayment._id,
+          workerId: worker._id,
+          connectedAccountId: worker.stripeConnectedAccountId,
+        },
+        "Stripe worker transfer creation failed"
+      );
+
+      return {
+        status: "failed",
+        errorMessage,
+      };
+    }
+  }
+
   getStripeCaptureExpiry(paymentIntent) {
     const captureBefore =
       paymentIntent?.latest_charge?.payment_method_details?.card?.capture_before || null;
@@ -419,6 +884,201 @@ class PaymentService {
     });
   }
 
+  async createTransferReversalForAdjustment(
+    payment,
+    amount,
+    { reason = "", metadata = {}, idempotencyKeySuffix = "" } = {}
+  ) {
+    if (!payment?.stripeTransferId || !amount || amount <= 0) {
+      return {
+        status: "not_required",
+        reversalAmount: 0,
+      };
+    }
+
+    const latestPayment = await paymentRepository.findById(payment._id);
+
+    if (!latestPayment?.stripeTransferId) {
+      return {
+        status: "not_required",
+        reversalAmount: 0,
+      };
+    }
+
+    const transferableAmount = Number(latestPayment.workerPayout || 0);
+    const alreadyReversedAmount = Number(latestPayment.stripeTransferReversedAmount || 0);
+    const proportionalAmount =
+      Number(latestPayment.amount || 0) > 0
+        ? Number(
+            ((Number(amount || 0) / Number(latestPayment.amount || 1)) * transferableAmount).toFixed(2)
+          )
+        : 0;
+    const remainingReversibleAmount = Math.max(
+      0,
+      Number((transferableAmount - alreadyReversedAmount).toFixed(2))
+    );
+    const reversalAmount = Math.min(remainingReversibleAmount, proportionalAmount || remainingReversibleAmount);
+
+    if (reversalAmount <= 0) {
+      return {
+        status: "already_reversed",
+        reversalAmount: 0,
+      };
+    }
+
+    const reversal = await this.getStripeClient().transfers.createReversal(
+      latestPayment.stripeTransferId,
+      {
+        amount: Math.round(reversalAmount * 100),
+        description: reason || "Payment adjustment",
+        metadata: {
+          paymentRecordId: String(latestPayment._id),
+          jobId: String(latestPayment.job || ""),
+          bookingId: String(latestPayment.booking || ""),
+          ...metadata,
+        },
+      },
+      {
+        idempotencyKey:
+          `transfer_reversal_${latestPayment._id}_${Math.round(reversalAmount * 100)}` +
+          `${idempotencyKeySuffix ? `_${idempotencyKeySuffix}` : ""}`,
+      }
+    );
+
+    const updatedReversedAmount = Number(
+      (alreadyReversedAmount + Number(reversal.amount || 0) / 100).toFixed(2)
+    );
+
+    await paymentRepository.updateById(latestPayment._id, {
+      stripeLatestTransferReversalId: reversal.id,
+      stripeTransferReversedAmount: updatedReversedAmount,
+      stripeTransferReversedAt: new Date(),
+    });
+
+    return {
+      status: "reversed",
+      reversalId: reversal.id,
+      reversalAmount: Number((Number(reversal.amount || 0) / 100).toFixed(2)),
+    };
+  }
+
+  async syncRefundState(payment, refund, context = {}) {
+    if (!payment?._id || !refund?.id) {
+      return payment;
+    }
+
+    const latestPayment = await paymentRepository.findById(payment._id);
+
+    if (!latestPayment) {
+      return null;
+    }
+
+    let refundedAmount = this.getRefundedAmount(latestPayment);
+
+    if (this.getChargeIdFromRefund(refund)) {
+      try {
+        const charge = await this.getStripeClient().charges.retrieve(this.getChargeIdFromRefund(refund));
+        refundedAmount = Number((Number(charge.amount_refunded || 0) / 100).toFixed(2));
+      } catch (error) {
+        refundedAmount = Number(
+          (
+            refundedAmount +
+            (latestPayment.stripeLatestRefundId === refund.id ? 0 : Number(refund.amount || 0) / 100)
+          ).toFixed(2)
+        );
+      }
+    } else {
+      refundedAmount = Number(
+        (
+          refundedAmount +
+          (latestPayment.stripeLatestRefundId === refund.id ? 0 : Number(refund.amount || 0) / 100)
+        ).toFixed(2)
+      );
+    }
+
+    const refundTimestamp = this.getStripeRefundTimestamp(refund) || new Date();
+    const isSucceededRefund = refund.status === "succeeded";
+    const isFullyRefunded = isSucceededRefund && this.isFullyRefunded(latestPayment, refundedAmount);
+    const nextStatus = isFullyRefunded ? "refunded" : latestPayment.status;
+    const update = this.buildStripeSyncUpdate(
+      context,
+      {
+        status: nextStatus,
+        stripeLatestRefundId: refund.id,
+        stripeRefundStatus: String(refund.status || "").trim(),
+        stripeRefundAmount: refundedAmount,
+        refundedAt: isSucceededRefund ? refundTimestamp : latestPayment.refundedAt,
+        refundReason:
+          String(refund.reason || latestPayment.refundReason || "").trim() ||
+          latestPayment.refundReason ||
+          "",
+        refundFailureReason: "",
+      },
+      refundTimestamp
+    );
+
+    const updatedPayment = await paymentRepository.updateById(latestPayment._id, update);
+
+    if (updatedPayment?.job) {
+      await this.syncJobPaymentState(updatedPayment.job, {
+        paymentStatus: isFullyRefunded ? "refunded" : updatedPayment.status,
+        isPaid: !isFullyRefunded,
+      });
+    }
+
+    return updatedPayment;
+  }
+
+  async syncFailedRefundState(payment, refund, context = {}) {
+    if (!payment?._id || !refund?.id) {
+      return payment;
+    }
+
+    return paymentRepository.updateById(
+      payment._id,
+      this.buildStripeSyncUpdate(
+        context,
+        {
+          stripeLatestRefundId: refund.id,
+          stripeRefundStatus: String(refund.status || "failed").trim(),
+          refundFailureReason: this.normalizeRepairErrorMessage(
+            refund.failure_reason || "Stripe refund failed"
+          ),
+        },
+        new Date()
+      )
+    );
+  }
+
+  async syncDisputeState(payment, dispute, context = {}) {
+    if (!payment?._id || !dispute?.id) {
+      return payment;
+    }
+
+    const disputeAmount = Number((Number(dispute.amount || 0) / 100).toFixed(2));
+    const update = this.buildStripeSyncUpdate(
+      context,
+      {
+        stripeDisputeId: dispute.id,
+        stripeDisputeStatus: String(dispute.status || "").trim(),
+        stripeDisputeReason: String(dispute.reason || "").trim(),
+        stripeDisputeAmount: disputeAmount,
+        stripeDisputeEvidenceDueBy: this.getStripeDisputeEvidenceDueDate(dispute),
+        stripeDisputeOutcome:
+          ["won", "lost", "warning_closed"].includes(String(dispute.status || ""))
+            ? String(dispute.status || "")
+            : "",
+        stripeDisputeClosedAt:
+          ["won", "lost", "warning_closed"].includes(String(dispute.status || ""))
+            ? new Date()
+            : null,
+      },
+      new Date()
+    );
+
+    return paymentRepository.updateById(payment._id, update);
+  }
+
   async reconcileAuthorizedCheckoutSession(payment, session, paymentIntent, context = {}) {
     const lock = await paymentRepository.acquireReconciliationLock(
       payment._id,
@@ -487,6 +1147,12 @@ class PaymentService {
               paymentIntent?.customer || session.customer || latestPayment.stripeCustomerId || "",
             stripePaymentMethodId:
               paymentIntent?.payment_method || latestPayment.stripePaymentMethodId || "",
+            stripeChargeId:
+              this.getLatestChargeId(paymentIntent) || latestPayment.stripeChargeId || "",
+            stripeTransferGroup:
+              paymentIntent?.transfer_group ||
+              latestPayment.stripeTransferGroup ||
+              this.buildTransferGroup(latestPayment._id),
             paymentMethod:
               latestPayment.paymentMethod && latestPayment.paymentMethod !== "unknown"
                 ? latestPayment.paymentMethod
@@ -605,6 +1271,8 @@ class PaymentService {
               "",
             stripePaymentMethodId:
               paymentIntent?.payment_method || latestPayment.stripePaymentMethodId || "",
+            stripeChargeId:
+              this.getLatestChargeId(paymentIntent) || latestPayment.stripeChargeId || "",
             paymentMethod:
               latestPayment.paymentMethod && latestPayment.paymentMethod !== "unknown"
                 ? latestPayment.paymentMethod
@@ -614,6 +1282,11 @@ class PaymentService {
           },
           syncedAt
         )
+      );
+      const workerTransfer = await this.ensureWorkerTransferForPaidPayment(
+        updatedPayment,
+        paymentIntent,
+        context
       );
       const shouldNotify = latestPayment.status !== "paid" || !latestPayment.job;
 
@@ -651,6 +1324,8 @@ class PaymentService {
         paymentId: String(updatedPayment._id),
         jobId: String(jobId),
         sessionId: session?.id || "",
+        workerTransferStatus: workerTransfer.status,
+        workerTransferId: workerTransfer.transferId || "",
       };
     } finally {
       await paymentRepository.releaseReconciliationLock(payment._id);
@@ -662,7 +1337,7 @@ class PaymentService {
       throw new AppError("Stripe checkout session id is required for reconciliation", 500);
     }
 
-    const payment = await paymentRepository.findBySessionId(session.id);
+    const payment = await this.findPaymentForCheckoutSession(session);
 
     if (!payment) {
       logger.warn({ sessionId: session.id }, "Stripe checkout session has no local payment record");
@@ -695,6 +1370,10 @@ class PaymentService {
     }
 
     if (paymentIntent?.status === "succeeded") {
+      return this.reconcilePaidCheckoutSession(payment, session, paymentIntent, context);
+    }
+
+    if (session.payment_status === "paid") {
       return this.reconcilePaidCheckoutSession(payment, session, paymentIntent, context);
     }
 
@@ -764,70 +1443,143 @@ class PaymentService {
     normalizedJobDraft.estimatedPrice = pricing.amount;
     normalizedJobDraft.priceQuoted = pricing.amount;
     normalizedJobDraft.pricing = quote;
+    const currency = payload.currency || "USD";
+    const checkoutFingerprint = this.buildCheckoutFingerprint(
+      user._id,
+      normalizedJobDraft,
+      pricing,
+      currency
+    );
+    const reusablePayment = await this.findReusableCheckoutAttempt(
+      user._id,
+      checkoutFingerprint
+    );
 
-    const paymentRecord = await paymentRepository.create({
-      customer: user._id,
-      amount: pricing.amount,
-      currency: payload.currency || "USD",
-      platformFeePercentage: pricing.platformFeePercentage,
-      platformFee: pricing.platformFee,
-      workerPayout: pricing.workerPayout,
-      status: "pending",
-      gateway: "stripe",
-      paymentMethod: "card",
-      description: payload.description || `${normalizedJobDraft.title} booking payment`,
-      metadata: {
-        draftJob: normalizedJobDraft,
-        pricingQuote: quote,
-      },
-    });
+    if (
+      reusablePayment &&
+      this.isRecentPendingCheckout(reusablePayment) &&
+      reusablePayment.status === "pending" &&
+      reusablePayment.stripeCheckoutSessionId &&
+      reusablePayment.checkoutUrl
+    ) {
+      return {
+        payment: reusablePayment,
+        url: reusablePayment.checkoutUrl,
+        sessionId: reusablePayment.stripeCheckoutSessionId,
+      };
+    }
 
-    const stripe = this.getStripeClient();
-    const cancelUrl = this.resolveClientReturnUrl(payload.cancelUrl, "/book");
-
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      customer_creation: "always",
-      customer_email: normalizedJobDraft.email,
-      payment_method_types: ["card"],
-      payment_intent_data: {
-        capture_method: "manual",
-        setup_future_usage: "off_session",
-        metadata: {
-          paymentRecordId: String(paymentRecord._id),
-        },
-      },
-      line_items: [
-        {
-          price_data: {
-            currency: (payload.currency || "usd").toLowerCase(),
-            product_data: {
-              name: normalizedJobDraft.title,
-              description: normalizedJobDraft.jobDescription,
+    const paymentRecord =
+      reusablePayment && this.isRecentPendingCheckout(reusablePayment)
+        ? await paymentRepository.updateById(reusablePayment._id, {
+            amount: pricing.amount,
+            currency,
+            platformFeePercentage: pricing.platformFeePercentage,
+            platformFee: pricing.platformFee,
+            workerPayout: pricing.workerPayout,
+            status: "pending",
+            gateway: "stripe",
+            paymentMethod: "card",
+            description: payload.description || `${normalizedJobDraft.title} booking payment`,
+            stripeTransferGroup:
+              reusablePayment.stripeTransferGroup ||
+              this.buildTransferGroup(reusablePayment._id),
+            stripeCheckoutSessionId: reusablePayment.stripeCheckoutSessionId || "",
+            checkoutUrl: reusablePayment.checkoutUrl || "",
+            lastRepairError: "",
+            lastCaptureError: "",
+            workerTransferStatus: "pending",
+            workerTransferFailedAt: null,
+            workerTransferredAt: null,
+            workerLastPayoutFailure: "",
+            metadata: {
+              draftJob: normalizedJobDraft,
+              pricingQuote: quote,
+              checkoutFingerprint,
             },
-            unit_amount: Math.round(pricing.amount * 100),
+          })
+        : await paymentRepository.create({
+            customer: user._id,
+            amount: pricing.amount,
+            currency,
+            platformFeePercentage: pricing.platformFeePercentage,
+            platformFee: pricing.platformFee,
+            workerPayout: pricing.workerPayout,
+            status: "pending",
+            gateway: "stripe",
+            paymentMethod: "card",
+            description: payload.description || `${normalizedJobDraft.title} booking payment`,
+            metadata: {
+              draftJob: normalizedJobDraft,
+              pricingQuote: quote,
+              checkoutFingerprint,
+            },
+          });
+    const transferGroup =
+      paymentRecord.stripeTransferGroup || this.buildTransferGroup(paymentRecord._id);
+
+    try {
+      const stripe = this.getStripeClient();
+      const cancelUrl = this.resolveClientReturnUrl(payload.cancelUrl, "/book");
+
+      const session = await stripe.checkout.sessions.create(
+        {
+          mode: "payment",
+          customer_creation: "always",
+          customer_email: normalizedJobDraft.email,
+          payment_method_types: ["card"],
+          payment_intent_data: {
+            setup_future_usage: "off_session",
+            transfer_group: transferGroup,
+            metadata: {
+              paymentRecordId: String(paymentRecord._id),
+            },
           },
-          quantity: 1,
+          line_items: [
+            {
+              price_data: {
+                currency: String(currency || "usd").toLowerCase(),
+                product_data: {
+                  name: normalizedJobDraft.title,
+                  description: normalizedJobDraft.jobDescription,
+                },
+                unit_amount: Math.round(pricing.amount * 100),
+              },
+              quantity: 1,
+            },
+          ],
+          success_url: this.buildCheckoutSuccessUrl(),
+          cancel_url: cancelUrl,
+          metadata: {
+            paymentRecordId: String(paymentRecord._id),
+            paymentFlow: "authorize_then_capture",
+            transferGroup,
+          },
         },
-      ],
-      success_url: this.buildCheckoutSuccessUrl(),
-      cancel_url: cancelUrl,
-      metadata: {
-        paymentRecordId: String(paymentRecord._id),
-        paymentFlow: "authorize_then_capture",
-      },
-    });
+        {
+          idempotencyKey: `checkout_${checkoutFingerprint}`,
+        }
+      );
 
-    const updatedPayment = await paymentRepository.updateById(paymentRecord._id, {
-      stripeCheckoutSessionId: session.id,
-      checkoutUrl: session.url,
-    });
+      const updatedPayment = await paymentRepository.updateById(paymentRecord._id, {
+        stripeCheckoutSessionId: session.id,
+        checkoutUrl: session.url,
+        stripeTransferGroup: transferGroup,
+      });
 
-    return {
-      payment: updatedPayment,
-      url: session.url,
-      sessionId: session.id,
-    };
+      return {
+        payment: updatedPayment,
+        url: session.url,
+        sessionId: session.id,
+      };
+    } catch (error) {
+      await paymentRepository.updateById(paymentRecord._id, {
+        status: "failed",
+        lastRepairError: this.normalizeRepairErrorMessage(error),
+      });
+
+      throw error;
+    }
   }
 
   assertPaymentAccess(user, payment) {
@@ -867,24 +1619,80 @@ class PaymentService {
       filter.worker = user._id;
     }
 
+    const isAdmin = hasRole(user, ROLES.ADMIN);
+
+    if (isAdmin) {
+      const [result] = await paymentRepository.listForDashboard(filter, {
+        page: pagination.page,
+        limit: pagination.limit,
+        search: query.search,
+        exactDate: String(query.date || "").trim(),
+        dateRangeStart: this.getDateRangeStart(query.dateRange),
+        includeSummary: true,
+      });
+
+      const items = Array.isArray(result?.items) ? result.items : [];
+      const total = Number(result?.totalCount?.[0]?.count || 0);
+      const summary = result?.summary?.[0] || {
+        totalAmount: 0,
+        totalPlatformFee: 0,
+        totalHeroPayout: 0,
+        pendingPayments: 0,
+        pendingCount: 0,
+        paidCount: 0,
+        totalCount: 0,
+      };
+
+      return {
+        items,
+        pagination: {
+          page: pagination.page,
+          limit: pagination.limit,
+          total,
+          totalPages: Math.ceil(total / pagination.limit) || 1,
+        },
+        summary,
+      };
+    }
+
     const items = await paymentRepository.findMany(filter, {
       populate: paymentRepository.buildRelationsPopulate(),
       sort: { createdAt: -1 },
       lean: true,
     });
 
-    const filteredItems = items.filter(
-      (payment) =>
-        this.matchesSearch(payment, query.search) &&
-        this.matchesSpecificDate(payment, query.date) &&
-        this.matchesDateRange(payment, query.dateRange)
-    );
+    const normalizedSearch = String(query.search || "").trim().toLowerCase();
+    const exactDate = String(query.date || "").trim();
+    const dateRange = query.dateRange;
+    const filteredItems = items.filter((payment) => {
+      const paymentId = String(payment?._id || "").toLowerCase();
+      const searchMatches =
+        !normalizedSearch ||
+        [
+          paymentId,
+          payment?.job?.title,
+          payment?.job?.serviceType,
+          payment?.customer?.name,
+          payment?.customer?.email,
+          payment?.worker?.name,
+          payment?.worker?.email,
+          payment?.description,
+        ]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(normalizedSearch));
 
-    const startIndex = (pagination.page - 1) * pagination.limit;
-    const paginatedItems = filteredItems.slice(startIndex, startIndex + pagination.limit);
+      return (
+        searchMatches &&
+        this.matchesSpecificDate(payment, exactDate) &&
+        this.matchesDateRange(payment, dateRange)
+      );
+    });
 
     return {
-      items: paginatedItems,
+      items: filteredItems.slice(
+        (pagination.page - 1) * pagination.limit,
+        pagination.page * pagination.limit
+      ),
       pagination: {
         page: pagination.page,
         limit: pagination.limit,
@@ -914,6 +1722,277 @@ class PaymentService {
     return payment;
   }
 
+  async refundPayment(user, paymentId, payload = {}) {
+    if (!hasRole(user, ROLES.ADMIN)) {
+      throw new AppError("Only admins can issue refunds", 403);
+    }
+
+    const payment = await paymentRepository.findById(paymentId, {
+      populate: paymentRepository.buildRelationsPopulate(),
+    });
+
+    if (!payment) {
+      throw new AppError("Payment not found", 404);
+    }
+
+    if (payment.gateway !== "stripe") {
+      throw new AppError("Only Stripe payments can be refunded through this workflow", 409);
+    }
+
+    if (!["paid", "refunded"].includes(payment.status)) {
+      throw new AppError("Only paid payments can be refunded", 409);
+    }
+
+    const remainingRefundableAmount = this.getRemainingRefundableAmount(payment);
+
+    if (remainingRefundableAmount <= 0) {
+      throw new AppError("This payment has already been fully refunded", 409);
+    }
+
+    const requestedAmount =
+      payload.amount === undefined || payload.amount === null || payload.amount === ""
+        ? remainingRefundableAmount
+        : Number(payload.amount);
+
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+      throw new AppError("Refund amount must be greater than zero", 400);
+    }
+
+    if (requestedAmount > remainingRefundableAmount) {
+      throw new AppError("Refund amount exceeds the remaining refundable balance", 400);
+    }
+
+    let chargeId = String(payment.stripeChargeId || "").trim();
+
+    if (!chargeId && payment.stripePaymentIntentId) {
+      const paymentIntent = await this.retrievePaymentIntent(payment.stripePaymentIntentId);
+      chargeId = this.getLatestChargeId(paymentIntent);
+
+      if (chargeId && !payment.stripeChargeId) {
+        await paymentRepository.updateById(payment._id, {
+          stripeChargeId: chargeId,
+        });
+      }
+    }
+
+    if (!chargeId) {
+      throw new AppError("Stripe charge details are unavailable for this payment", 409);
+    }
+
+    const stripe = this.getStripeClient();
+    const reason = this.normalizeRefundReason(payload.reason);
+    const refund = await stripe.refunds.create(
+      {
+        charge: chargeId,
+        amount: Math.round(requestedAmount * 100),
+        reason,
+        metadata: {
+          paymentRecordId: String(payment._id),
+          jobId: String(payment.job?._id || payment.job || ""),
+          bookingId: String(payment.booking?._id || payment.booking || ""),
+          adminUserId: String(user._id || ""),
+        },
+      },
+      {
+        idempotencyKey: `refund_${payment._id}_${Math.round(requestedAmount * 100)}`,
+      }
+    );
+
+    let updatedPayment =
+      refund.status === "failed"
+        ? await this.syncFailedRefundState(payment, refund, {
+            source: "admin_refund",
+          })
+        : await this.syncRefundState(payment, refund, {
+            source: "admin_refund",
+          });
+
+    let transferReversal = {
+      status: "not_required",
+      reversalAmount: 0,
+      reversalId: "",
+    };
+
+    if (refund.status !== "failed") {
+      try {
+        transferReversal = await this.createTransferReversalForAdjustment(
+          updatedPayment || payment,
+          requestedAmount,
+          {
+            reason: `Refund ${refund.id}`,
+            metadata: {
+              refundId: refund.id,
+              adminUserId: String(user._id || ""),
+            },
+            idempotencyKeySuffix: refund.id,
+          }
+        );
+      } catch (error) {
+        logger.error(
+          {
+            err: error,
+            paymentId: payment._id,
+            refundId: refund.id,
+          },
+          "Stripe transfer reversal failed after refund creation"
+        );
+      }
+    }
+
+    updatedPayment = await paymentRepository.findById(payment._id, {
+      populate: paymentRepository.buildRelationsPopulate(),
+    });
+
+    await Promise.allSettled([
+      notificationService.createForUser(payment.customer, {
+        type: "payment_refunded",
+        recipientRole: ROLES.CUSTOMER,
+        category: "payment",
+        title: "Payment refund issued",
+        message:
+          requestedAmount >= Number(payment.amount || 0)
+            ? `A full refund of $${requestedAmount.toFixed(2)} was issued for your booking.`
+            : `A refund of $${requestedAmount.toFixed(2)} was issued for your booking.`,
+        link: `/payment-history`,
+        entityType: "payment",
+        entityId: String(payment._id),
+        actorUserId: user._id,
+      }),
+      payment.worker
+        ? notificationService.createForUser(payment.worker, {
+            type: "payment_adjusted",
+            recipientRole: ROLES.WORKER,
+            category: "payment",
+            title: "Payment adjusted",
+            message: `A refund of $${requestedAmount.toFixed(2)} was issued for a completed job.`,
+            link: `/payment`,
+            entityType: "payment",
+            entityId: String(payment._id),
+            actorUserId: user._id,
+          })
+        : null,
+      notificationService.notifyAdmins(
+        {
+          type: "payment_refunded",
+          category: "payment",
+          title: "Payment refunded",
+          message: `Refund ${refund.id} was created for payment ${payment._id}.`,
+          link: `/payment-details`,
+          entityType: "payment",
+          entityId: String(payment._id),
+          actorUserId: user._id,
+        },
+        { preferenceKey: "paymentIssues" }
+      ),
+    ]);
+
+    return {
+      payment: updatedPayment,
+      refund: {
+        id: refund.id,
+        amount: Number((Number(refund.amount || 0) / 100).toFixed(2)),
+        status: refund.status,
+        reason: refund.reason || reason,
+      },
+      transferReversal,
+    };
+  }
+
+  async acceptDispute(user, paymentId) {
+    if (!hasRole(user, ROLES.ADMIN)) {
+      throw new AppError("Only admins can accept disputes", 403);
+    }
+
+    const payment = await paymentRepository.findById(paymentId, {
+      populate: paymentRepository.buildRelationsPopulate(),
+    });
+
+    if (!payment) {
+      throw new AppError("Payment not found", 404);
+    }
+
+    const disputeId = String(payment.stripeDisputeId || "").trim();
+
+    if (!disputeId) {
+      throw new AppError("No active Stripe dispute was found for this payment", 409);
+    }
+
+    if (!this.isDisputeActionable(payment.stripeDisputeStatus)) {
+      throw new AppError("This dispute can no longer be accepted", 409);
+    }
+
+    const dispute = await this.getStripeClient().disputes.close(disputeId);
+
+    await this.syncDisputeState(payment, dispute, {
+      source: "admin_dispute_accept",
+    });
+
+    await paymentRepository.updateById(payment._id, {
+      stripeDisputeSubmittedAt: new Date(),
+      stripeDisputeLastAction: "accepted",
+      stripeDisputeLastActionBy: user._id,
+    });
+
+    return {
+      payment: await paymentRepository.findById(payment._id, {
+        populate: paymentRepository.buildRelationsPopulate(),
+      }),
+      dispute,
+    };
+  }
+
+  async submitDisputeEvidence(user, paymentId, payload = {}) {
+    if (!hasRole(user, ROLES.ADMIN)) {
+      throw new AppError("Only admins can respond to disputes", 403);
+    }
+
+    const payment = await paymentRepository.findById(paymentId, {
+      populate: paymentRepository.buildRelationsPopulate(),
+    });
+
+    if (!payment) {
+      throw new AppError("Payment not found", 404);
+    }
+
+    const disputeId = String(payment.stripeDisputeId || "").trim();
+
+    if (!disputeId) {
+      throw new AppError("No active Stripe dispute was found for this payment", 409);
+    }
+
+    if (!this.isDisputeActionable(payment.stripeDisputeStatus)) {
+      throw new AppError("This dispute can no longer accept evidence", 409);
+    }
+
+    const evidence = this.buildDisputeEvidencePayload(payment, payload);
+
+    if (!Object.keys(evidence).length) {
+      throw new AppError("Add at least one piece of dispute evidence before submitting", 400);
+    }
+
+    const dispute = await this.getStripeClient().disputes.update(disputeId, {
+      evidence,
+      submit: true,
+    });
+
+    await this.syncDisputeState(payment, dispute, {
+      source: "admin_dispute_response",
+    });
+
+    await paymentRepository.updateById(payment._id, {
+      stripeDisputeSubmittedAt: new Date(),
+      stripeDisputeLastAction: "submitted",
+      stripeDisputeLastActionBy: user._id,
+    });
+
+    return {
+      payment: await paymentRepository.findById(payment._id, {
+        populate: paymentRepository.buildRelationsPopulate(),
+      }),
+      dispute,
+    };
+  }
+
   async getCheckoutSessionStatus(user, sessionId) {
     if (!sessionId) {
       throw new AppError("Checkout session id is required", 400);
@@ -928,26 +2007,40 @@ class PaymentService {
     this.assertPaymentAccess(user, payment);
 
     const stripe = this.getStripeClient();
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    let session = null;
 
-    if (payment.status !== "paid") {
-      await this.reconcileCheckoutSession(session, {
-        source: "status_check",
-      });
+    try {
+      session = await stripe.checkout.sessions.retrieve(sessionId);
 
-      payment = await paymentRepository.findBySessionIdWithRelations(sessionId);
+      if (!["paid", "failed", "cancelled"].includes(payment.status)) {
+        await this.reconcileCheckoutSession(session, {
+          source: "status_check",
+        });
+
+        payment = await paymentRepository.findBySessionIdWithRelations(sessionId);
+      }
+    } catch (error) {
+      logger.warn(
+        {
+          err: error,
+          paymentId: payment._id,
+          sessionId,
+        },
+        "Unable to refresh Stripe checkout session status"
+      );
     }
+
+    const draftJob = payment.metadata?.draftJob || null;
 
     return {
       payment,
       job: payment.job || null,
-      draftJob: payment.metadata?.draftJob || null,
+      draftJob,
       checkout: {
-        id: session.id,
-        status: session.status || "",
-        paymentStatus: session.payment_status || "",
-        customerEmail:
-          session.customer_details?.email || payment.metadata?.draftJob?.email || "",
+        id: session?.id || sessionId,
+        status: session?.status || "",
+        paymentStatus: session?.payment_status || "",
+        customerEmail: session?.customer_details?.email || draftJob?.email || "",
       },
     };
   }
@@ -971,11 +2064,15 @@ class PaymentService {
     }
 
     if (payment.status === "paid") {
+      const workerTransfer = await this.ensureWorkerTransferForPaidPayment(payment, null, context);
+
       return {
         status: "already_paid",
         paymentId: String(payment._id),
         bookingId: String(bookingId || ""),
         jobId: String(jobId || payment.job || ""),
+        workerTransferStatus: workerTransfer.status,
+        workerTransferId: workerTransfer.transferId || "",
       };
     }
 
@@ -989,7 +2086,7 @@ class PaymentService {
           })
         : null;
 
-      if (paymentIntent?.status === "requires_capture") {
+      if (paymentIntent?.status === "requires_capture" && !this.isAuthorizationExpired(paymentIntent, payment)) {
         paymentIntent = await stripe.paymentIntents.capture(paymentIntent.id);
         paymentIntent = await stripe.paymentIntents.retrieve(paymentIntent.id, {
           expand: ["latest_charge"],
@@ -1008,6 +2105,10 @@ class PaymentService {
             source: "booking_completion",
           }
         );
+      }
+
+      if (paymentIntent?.status === "requires_capture" && this.isAuthorizationExpired(paymentIntent, payment)) {
+        paymentIntent = null;
       }
 
       if (paymentIntent?.status === "succeeded") {
@@ -1236,22 +2337,7 @@ class PaymentService {
     );
   }
 
-  async handleStripeWebhook(rawBody, signature) {
-    const stripe = this.getStripeClient();
-
-    if (!env.stripeWebhookSecret) {
-      throw new AppError("Stripe webhook secret is not configured", 500);
-    }
-
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(rawBody, signature, env.stripeWebhookSecret);
-    } catch (error) {
-      logger.error({ err: error }, "Stripe webhook signature validation failed");
-      throw new AppError(`Webhook Error: ${error.message}`, 400);
-    }
-
+  async processStripeWebhookEvent(event) {
     if (event.type === "checkout.session.completed") {
       await this.reconcileCheckoutSession(event.data.object, {
         source: "webhook",
@@ -1262,30 +2348,241 @@ class PaymentService {
 
     if (event.type === "payment_intent.payment_failed") {
       const paymentIntent = event.data.object;
-      const failedPayment = await paymentRepository.updateOne(
-        { stripePaymentIntentId: paymentIntent.id },
-        this.buildStripeSyncUpdate(
+      const failedPayment = await this.findPaymentForPaymentIntent(paymentIntent);
+
+      if (failedPayment) {
+        await paymentRepository.updateById(
+          failedPayment._id,
+          this.buildStripeSyncUpdate(
+            {
+              source: "webhook",
+              stripeEventId: event.id,
+              stripeEventType: event.type,
+            },
+            {
+              status: "failed",
+              captureAttemptedAt: new Date(),
+              lastCaptureError: this.normalizeRepairErrorMessage(
+                paymentIntent?.last_payment_error?.message || "Stripe payment failed"
+              ),
+            },
+            new Date()
+          )
+        );
+
+        if (failedPayment.job) {
+          await this.syncJobPaymentState(failedPayment.job, {
+            paymentStatus: "failed",
+            isPaid: false,
+          });
+        }
+      }
+    }
+
+    if (event.type === "payment_intent.succeeded") {
+      const paymentIntent = event.data.object;
+      const paidPayment = await this.findPaymentForPaymentIntent(paymentIntent);
+
+      if (paidPayment) {
+        await this.reconcilePaidCheckoutSession(
+          paidPayment,
+          {
+            id: paidPayment.stripeCheckoutSessionId || `payment_intent_${paymentIntent.id}`,
+            payment_intent: paymentIntent.id,
+            customer: paymentIntent.customer || paidPayment.stripeCustomerId || "",
+          },
+          paymentIntent,
           {
             source: "webhook",
             stripeEventId: event.id,
             stripeEventType: event.type,
-          },
-          {
-            status: "failed",
-            captureAttemptedAt: new Date(),
-            lastCaptureError: this.normalizeRepairErrorMessage(
-              paymentIntent?.last_payment_error?.message || "Stripe payment failed"
-            ),
-          },
-          new Date()
-        )
-      );
+          }
+        );
+      }
+    }
 
-      if (failedPayment?.job) {
-        await this.syncJobPaymentState(failedPayment.job, {
-          paymentStatus: "failed",
-          isPaid: false,
+    if (
+      event.type === "refund.created" ||
+      event.type === "refund.updated" ||
+      event.type === "refund.failed"
+    ) {
+      const refund = event.data.object;
+      const refundedPayment = await this.findPaymentForChargeId(this.getChargeIdFromRefund(refund));
+
+      if (refundedPayment) {
+        if (event.type === "refund.failed" || refund.status === "failed") {
+          await this.syncFailedRefundState(refundedPayment, refund, {
+            source: "webhook",
+            stripeEventId: event.id,
+            stripeEventType: event.type,
+          });
+        } else {
+          await this.syncRefundState(refundedPayment, refund, {
+            source: "webhook",
+            stripeEventId: event.id,
+            stripeEventType: event.type,
+          });
+        }
+      }
+    }
+
+    if (
+      event.type === "charge.dispute.created" ||
+      event.type === "charge.dispute.updated" ||
+      event.type === "charge.dispute.closed" ||
+      event.type === "charge.dispute.funds_withdrawn" ||
+      event.type === "charge.dispute.funds_reinstated"
+    ) {
+      const dispute = event.data.object;
+      const disputedPayment =
+        (await paymentRepository.findByDisputeId(dispute.id)) ||
+        (await this.findPaymentForChargeId(this.getChargeIdFromDispute(dispute)));
+
+      if (disputedPayment) {
+        const updatedPayment = await this.syncDisputeState(disputedPayment, dispute, {
+          source: "webhook",
+          stripeEventId: event.id,
+          stripeEventType: event.type,
         });
+
+        if (event.type === "charge.dispute.funds_withdrawn") {
+          await paymentRepository.updateById(disputedPayment._id, {
+            stripeDisputeFundsWithdrawnAt: new Date(),
+          });
+
+          if (updatedPayment?.worker && updatedPayment?.stripeTransferId) {
+            try {
+              await this.createTransferReversalForAdjustment(
+                updatedPayment,
+                Number(updatedPayment.workerPayout || updatedPayment.amount || 0),
+                {
+                  reason: `Dispute ${dispute.id}`,
+                  metadata: {
+                    disputeId: dispute.id,
+                  },
+                  idempotencyKeySuffix: dispute.id,
+                }
+              );
+            } catch (error) {
+              logger.error(
+                {
+                  err: error,
+                  paymentId: updatedPayment._id,
+                  disputeId: dispute.id,
+                },
+                "Stripe transfer reversal failed after dispute funds withdrawal"
+              );
+            }
+          }
+        }
+
+        if (event.type === "charge.dispute.funds_reinstated") {
+          await paymentRepository.updateById(disputedPayment._id, {
+            stripeDisputeOutcome: String(dispute.status || "won").trim(),
+          });
+        }
+
+        if (event.type === "charge.dispute.created") {
+          await Promise.allSettled([
+            notificationService.notifyAdmins(
+              {
+                type: "payment_dispute_opened",
+                category: "payment",
+                title: "Payment dispute opened",
+                message: `Stripe dispute ${dispute.id} was opened for payment ${disputedPayment._id}.`,
+                link: `/payment-details`,
+                entityType: "payment",
+                entityId: String(disputedPayment._id),
+              },
+              { preferenceKey: "paymentIssues" }
+            ),
+            notificationService.createForUser(disputedPayment.customer, {
+              type: "payment_dispute_opened",
+              recipientRole: ROLES.CUSTOMER,
+              category: "payment",
+              title: "Payment dispute under review",
+              message: "Your payment is currently under dispute review with Stripe.",
+              link: `/payment-history`,
+              entityType: "payment",
+              entityId: String(disputedPayment._id),
+            }),
+          ]);
+        }
+      }
+    }
+
+    if (event.type === "account.updated" || event.type === "account.external_account.updated") {
+      const connectedAccountId = event.account || event.data.object?.id || "";
+
+      if (connectedAccountId) {
+        await userRepository.findByStripeConnectedAccountId(connectedAccountId).then(async (user) => {
+          if (!user) {
+            return null;
+          }
+
+          const account = await this.getStripeClient().accounts.retrieve(connectedAccountId, {
+            expand: ["external_accounts"],
+          });
+
+          return userRepository.updateById(user._id, {
+            stripeConnectedAccountId: account.id,
+            stripeConnectCountry: String(account.country || "US").toUpperCase(),
+            stripeConnectBusinessType: String(account.business_type || "individual").trim(),
+            stripeConnectDefaultCurrency: String(account.default_currency || "usd").toLowerCase(),
+            stripeConnectDetailsSubmitted: Boolean(account.details_submitted),
+            stripeConnectChargesEnabled: Boolean(account.charges_enabled),
+            stripeConnectPayoutsEnabled: Boolean(account.payouts_enabled),
+            stripeConnectRequirementsDue: Array.isArray(account.requirements?.currently_due)
+              ? account.requirements.currently_due
+              : [],
+            stripeConnectDisabledReason: String(
+              account.requirements?.disabled_reason || account.disabled_reason || ""
+            ).trim(),
+            stripeConnectOnboardingCompletedAt:
+              account.details_submitted && account.payouts_enabled
+                ? user.stripeConnectOnboardingCompletedAt || new Date()
+                : null,
+            stripeConnectLastSyncedAt: new Date(),
+            stripeExternalAccountId: String(
+              account.external_accounts?.data?.find((item) => item?.object === "bank_account")?.id ||
+                ""
+            ),
+            stripeExternalAccountBankName: String(
+              account.external_accounts?.data?.find((item) => item?.object === "bank_account")
+                ?.bank_name || ""
+            ).trim(),
+            stripeExternalAccountLast4: String(
+              account.external_accounts?.data?.find((item) => item?.object === "bank_account")
+                ?.last4 || ""
+            ).trim(),
+            stripeExternalAccountCurrency: String(
+              account.external_accounts?.data?.find((item) => item?.object === "bank_account")
+                ?.currency || ""
+            ).toLowerCase(),
+          });
+        });
+      }
+    }
+
+    if (event.type === "payout.paid" || event.type === "payout.failed" || event.type === "payout.updated") {
+      const connectedAccountId = event.account || "";
+      const payout = event.data.object;
+
+      if (connectedAccountId) {
+        const connectedUser = await userRepository.findByStripeConnectedAccountId(connectedAccountId);
+
+        if (connectedUser) {
+          await userRepository.updateById(connectedUser._id, {
+            stripeLastPayoutId: String(payout?.id || ""),
+            stripeLastPayoutStatus: String(payout?.status || ""),
+            stripeLastPayoutFailureCode: String(payout?.failure_code || ""),
+            stripeLastPayoutFailureMessage: String(payout?.failure_message || "").slice(0, 500),
+            stripeLastPayoutArrivalDate: payout?.arrival_date
+              ? new Date(Number(payout.arrival_date) * 1000)
+              : null,
+            stripeLastPayoutUpdatedAt: new Date(),
+          });
+        }
       }
     }
 
@@ -1296,8 +2593,83 @@ class PaymentService {
         stripeEventType: event.type,
       });
     }
+  }
 
-    return { received: true };
+  async processPendingStripeWebhookEvents(trigger = "manual") {
+    if (this.webhookRunInProgress) {
+      return;
+    }
+
+    this.webhookRunInProgress = true;
+
+    try {
+      let processedCount = 0;
+
+      while (processedCount < WEBHOOK_EVENT_BATCH_SIZE) {
+        const queuedEvent = await stripeWebhookEventRepository.acquireNextPendingEvent(
+          new Date(Date.now() - WEBHOOK_EVENT_LOCK_TIMEOUT_MS)
+        );
+
+        if (!queuedEvent) {
+          break;
+        }
+
+        try {
+          await this.processStripeWebhookEvent(queuedEvent.payload);
+          await stripeWebhookEventRepository.markProcessed(queuedEvent._id);
+        } catch (error) {
+          await stripeWebhookEventRepository.markFailed(
+            queuedEvent._id,
+            this.normalizeRepairErrorMessage(error)
+          );
+          logger.error(
+            {
+              err: error,
+              stripeEventId: queuedEvent.stripeEventId,
+              stripeEventType: queuedEvent.type,
+              trigger,
+            },
+            "Stripe webhook event processing failed"
+          );
+        }
+
+        processedCount += 1;
+      }
+    } finally {
+      this.webhookRunInProgress = false;
+    }
+  }
+
+  startWebhookProcessingLoop() {
+    if (!env.stripeSecretKey || !env.stripeWebhookSecret) {
+      logger.info("Stripe webhook processing loop is disabled");
+      return;
+    }
+
+    if (this.webhookIntervalHandle) {
+      return;
+    }
+
+    setImmediate(() => {
+      this.processPendingStripeWebhookEvents("startup");
+    });
+
+    this.webhookIntervalHandle = setInterval(() => {
+      this.processPendingStripeWebhookEvents("interval");
+    }, WEBHOOK_EVENT_INTERVAL_MS);
+    this.webhookIntervalHandle.unref?.();
+
+    logger.info(
+      {
+        intervalMs: WEBHOOK_EVENT_INTERVAL_MS,
+        batchSize: WEBHOOK_EVENT_BATCH_SIZE,
+      },
+      "Stripe webhook processing loop started"
+    );
+  }
+
+  async handleStripeWebhook(rawBody, signature) {
+    return this.enqueueStripeWebhookEvent(rawBody, signature);
   }
 }
 

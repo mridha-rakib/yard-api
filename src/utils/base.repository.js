@@ -69,6 +69,7 @@ class BaseRepository {
       select,
       populate,
       lean = true,
+      includeTotal = true,
     } = options;
 
     const safePage = Number(page) > 0 ? Number(page) : 1;
@@ -88,6 +89,20 @@ class BaseRepository {
 
     if (lean) {
       query.lean();
+    }
+
+    if (!includeTotal) {
+      const items = await query;
+
+      return {
+        items,
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total: null,
+          totalPages: null,
+        },
+      };
     }
 
     const [items, total] = await Promise.all([query, this.count(filter)]);

@@ -6,9 +6,18 @@ const bookingRepository = require("./booking.repository");
 const jobRepository = require("../jobs/job.repository");
 const paymentRepository = require("../payments/payment.repository");
 const notificationService = require("../notifications/notification.service");
+const { isWorkerPayoutReady } = require("../../utils/worker-payouts");
+const { assertDataUrlMaxBytes, assertDataUrlMimeType } = require("../../utils/data-url");
+const {
+  deleteMediaObjectByUrl,
+  isManagedMediaUrl,
+  persistDataUrlToMediaStorage,
+} = require("../../utils/media-storage");
 
 const getCustomerBookingLink = (jobId) => `/booking-details?jobId=${jobId}`;
 const getHeroBookingLink = (jobId) => `/all-jobs/job-details?jobId=${jobId}`;
+const MAX_VERIFICATION_PHOTO_BYTES = 5 * 1024 * 1024;
+const MAX_VERIFICATION_VIDEO_BYTES = 25 * 1024 * 1024;
 const formatStatusLabel = (status = "") =>
   String(status || "")
     .split("_")
@@ -17,6 +26,30 @@ const formatStatusLabel = (status = "") =>
     .join(" ");
 
 class BookingService {
+  async clearStoredProofMedia(booking = {}) {
+    const proofMediaUrls = [
+      ...(Array.isArray(booking?.verificationPhotoUrls) ? booking.verificationPhotoUrls : []),
+      booking?.verificationVideoUrl,
+    ].filter(Boolean);
+
+    if (!proofMediaUrls.length) {
+      return;
+    }
+
+    await Promise.allSettled(
+      proofMediaUrls.map((mediaUrl) => deleteMediaObjectByUrl(mediaUrl))
+    );
+  }
+
+  assertWorkerCanReceivePayouts(worker) {
+    if (!isWorkerPayoutReady(worker)) {
+      throw new AppError(
+        "Complete your Stripe payout setup before accepting customer jobs",
+        409
+      );
+    }
+  }
+
   async createBookingFromJob(worker, jobId, payload = {}) {
     if (!hasRole(worker, ROLES.WORKER) && !hasRole(worker, ROLES.ADMIN)) {
       throw new AppError("Only Heroes and admins can create bookings", 403);
@@ -24,6 +57,10 @@ class BookingService {
 
     if (hasRole(worker, ROLES.WORKER) && worker.workerStatus !== "approved") {
       throw new AppError("Your Hero account is awaiting approval", 403);
+    }
+
+    if (hasRole(worker, ROLES.WORKER)) {
+      this.assertWorkerCanReceivePayouts(worker);
     }
 
     const job = await jobRepository.findById(jobId);
@@ -90,6 +127,8 @@ class BookingService {
     if (worker.workerStatus !== "approved") {
       throw new AppError("Your Hero account is awaiting approval", 403);
     }
+
+    this.assertWorkerCanReceivePayouts(worker);
 
     const claimedJob = await jobRepository.claimAvailableJob(jobId, worker._id);
 
@@ -195,6 +234,8 @@ class BookingService {
       throw new AppError("Only the Hero on this booking can start this service", 403);
     }
 
+    await this.clearStoredProofMedia(booking);
+
     const updatedBooking = await bookingRepository.updateById(bookingId, {
       status: "in_progress",
       startedAt: new Date(),
@@ -250,68 +291,141 @@ class BookingService {
       throw new AppError("A verification video is required before completion review", 400);
     }
 
-    const updatedBooking = await bookingRepository.updateById(bookingId, {
-      status: "pending_verification",
-      completedAt: new Date(),
-      workerCompletionNotes: String(payload.workerCompletionNotes || "").trim(),
-      verificationPhotoUrls,
-      verificationVideoUrl,
-      verificationSubmittedAt: new Date(),
-      verificationReviewedAt: null,
-      verificationApprovedAt: null,
-      verificationApprovedBy: null,
-      verificationNotes: String(payload.verificationNotes || "").trim(),
+    verificationPhotoUrls.forEach((photoUrl, index) => {
+      if (isManagedMediaUrl(photoUrl, "verification-photos")) {
+        return;
+      }
+
+      assertDataUrlMimeType(
+        photoUrl,
+        "image/",
+        `Verification photo ${index + 1} must be an image upload`
+      );
+      assertDataUrlMaxBytes(
+        photoUrl,
+        MAX_VERIFICATION_PHOTO_BYTES,
+        "Verification photo is too large. Please upload an image under 5MB."
+      );
     });
 
-    await jobRepository.updateById(booking.job?._id || booking.job, {
-      status: "pending_verification",
-    });
+    if (!isManagedMediaUrl(verificationVideoUrl, "verification-videos")) {
+      assertDataUrlMimeType(
+        verificationVideoUrl,
+        "video/",
+        "Verification proof must include a valid video file."
+      );
+      assertDataUrlMaxBytes(
+        verificationVideoUrl,
+        MAX_VERIFICATION_VIDEO_BYTES,
+        "Verification video is too large. Please upload a video under 25MB."
+      );
+    }
 
-    const refreshedBooking = await bookingRepository.findBookingWithRelations(updatedBooking._id);
-    const jobId = refreshedBooking.job?._id || refreshedBooking.job;
-    const jobTitle = refreshedBooking.job?.title || "your job";
+    const uploadedProofMediaUrls = [];
 
-    await Promise.allSettled([
-      notificationService.createForUser(refreshedBooking.customer, {
-        type: "booking_pending_verification",
-        recipientRole: ROLES.CUSTOMER,
-        category: "booking",
-        title: "Job proof submitted for review",
-        message: `"${jobTitle}" was marked complete and is now waiting for YardHero verification.`,
-        link: getCustomerBookingLink(jobId),
-        entityType: "booking",
-        entityId: String(refreshedBooking._id),
-        actorUserId: user._id,
-      }),
-      notificationService.createForUser(refreshedBooking.worker, {
-        type: "booking_pending_verification",
-        recipientRole: ROLES.WORKER,
-        category: "booking",
-        title: "Completion proof submitted",
-        message: `You submitted photo and video proof for "${jobTitle}". Payment will be released after admin approval.`,
-        link: getHeroBookingLink(jobId),
-        entityType: "booking",
-        entityId: String(refreshedBooking._id),
-        actorUserId: user._id,
-      }),
-      notificationService.notifyAdmins(
-        {
+    try {
+      await this.clearStoredProofMedia(booking);
+
+      const storedVerificationPhotoUrls = await Promise.all(
+        verificationPhotoUrls.map(async (photoUrl, index) => {
+          if (isManagedMediaUrl(photoUrl, "verification-photos")) {
+            return photoUrl;
+          }
+
+          const storedPhotoUrl = await persistDataUrlToMediaStorage(photoUrl, {
+            directoryName: "verification-photos",
+            filePrefix: `booking-${bookingId}-photo-${index + 1}`,
+            requiredMimePrefix: "image/",
+          });
+
+          uploadedProofMediaUrls.push(storedPhotoUrl);
+          return storedPhotoUrl;
+        })
+      );
+
+      const storedVerificationVideoUrl = isManagedMediaUrl(
+        verificationVideoUrl,
+        "verification-videos"
+      )
+        ? verificationVideoUrl
+        : await persistDataUrlToMediaStorage(verificationVideoUrl, {
+            directoryName: "verification-videos",
+            filePrefix: `booking-${bookingId}`,
+            requiredMimePrefix: "video/",
+          });
+
+      if (!isManagedMediaUrl(verificationVideoUrl, "verification-videos")) {
+        uploadedProofMediaUrls.push(storedVerificationVideoUrl);
+      }
+
+      const updatedBooking = await bookingRepository.updateById(bookingId, {
+        status: "pending_verification",
+        completedAt: new Date(),
+        workerCompletionNotes: String(payload.workerCompletionNotes || "").trim(),
+        verificationPhotoUrls: storedVerificationPhotoUrls,
+        verificationVideoUrl: storedVerificationVideoUrl,
+        verificationSubmittedAt: new Date(),
+        verificationReviewedAt: null,
+        verificationApprovedAt: null,
+        verificationApprovedBy: null,
+        verificationNotes: String(payload.verificationNotes || "").trim(),
+      });
+
+      await jobRepository.updateById(booking.job?._id || booking.job, {
+        status: "pending_verification",
+      });
+
+      const refreshedBooking = await bookingRepository.findBookingWithRelations(updatedBooking._id);
+      const jobId = refreshedBooking.job?._id || refreshedBooking.job;
+      const jobTitle = refreshedBooking.job?.title || "your job";
+
+      await Promise.allSettled([
+        notificationService.createForUser(refreshedBooking.customer, {
           type: "booking_pending_verification",
+          recipientRole: ROLES.CUSTOMER,
           category: "booking",
-          title: "Job awaiting verification",
-          message: `${refreshedBooking.worker?.name || "A Hero"} submitted proof for "${jobTitle}".`,
-          link: `/booking/${jobId}`,
+          title: "Job proof submitted for review",
+          message: `"${jobTitle}" was marked complete and is now waiting for YardHero verification.`,
+          link: getCustomerBookingLink(jobId),
           entityType: "booking",
           entityId: String(refreshedBooking._id),
           actorUserId: user._id,
-        },
-        {
-          preferenceKey: "serviceCompletions",
-        }
-      ),
-    ]);
+        }),
+        notificationService.createForUser(refreshedBooking.worker, {
+          type: "booking_pending_verification",
+          recipientRole: ROLES.WORKER,
+          category: "booking",
+          title: "Completion proof submitted",
+          message: `You submitted photo and video proof for "${jobTitle}". Payment will be released after admin approval.`,
+          link: getHeroBookingLink(jobId),
+          entityType: "booking",
+          entityId: String(refreshedBooking._id),
+          actorUserId: user._id,
+        }),
+        notificationService.notifyAdmins(
+          {
+            type: "booking_pending_verification",
+            category: "booking",
+            title: "Job awaiting verification",
+            message: `${refreshedBooking.worker?.name || "A Hero"} submitted proof for "${jobTitle}".`,
+            link: `/booking/${jobId}`,
+            entityType: "booking",
+            entityId: String(refreshedBooking._id),
+            actorUserId: user._id,
+          },
+          {
+            preferenceKey: "serviceCompletions",
+          }
+        ),
+      ]);
 
-    return refreshedBooking;
+      return refreshedBooking;
+    } catch (error) {
+      await Promise.allSettled(
+        uploadedProofMediaUrls.map((mediaUrl) => deleteMediaObjectByUrl(mediaUrl))
+      );
+      throw error;
+    }
   }
 
   async approveCompletionByAdmin(adminUser, bookingId, payload = {}) {
@@ -352,6 +466,12 @@ class BookingService {
     const jobId = refreshedBooking.job?._id || refreshedBooking.job;
     const jobTitle = refreshedBooking.job?.title || "your job";
     const paymentStatus = String(paymentCapture?.status || "").trim().toLowerCase();
+    const workerTransferStatus = String(paymentCapture?.workerTransferStatus || "")
+      .trim()
+      .toLowerCase();
+    const payoutNeedsAttention =
+      paymentStatus === "failed" ||
+      ["failed", "worker_not_ready", "charge_not_ready"].includes(workerTransferStatus);
 
     await Promise.allSettled([
       notificationService.createForUser(refreshedBooking.customer, {
@@ -360,7 +480,7 @@ class BookingService {
         category: "booking",
         title: "Job approved by YardHero",
         message:
-          paymentStatus === "failed"
+          payoutNeedsAttention
             ? `"${jobTitle}" was approved, but payment needs manual attention.`
             : `"${jobTitle}" passed verification and has been closed successfully.`,
         link: getCustomerBookingLink(jobId),
@@ -373,11 +493,11 @@ class BookingService {
         recipientRole: ROLES.WORKER,
         category: "booking",
         title:
-          paymentStatus === "failed"
+          payoutNeedsAttention
             ? "Job approved, payout needs attention"
             : "Job approved and payout released",
         message:
-          paymentStatus === "failed"
+          payoutNeedsAttention
             ? `Your work on "${jobTitle}" was approved, but the payout needs manual review.`
             : `Your work on "${jobTitle}" was approved and the payout was released.`,
         link: "/payment",
@@ -385,14 +505,14 @@ class BookingService {
         entityId: String(refreshedBooking._id),
         actorUserId: adminUser._id,
       }),
-      ...(paymentStatus === "failed"
+      ...(payoutNeedsAttention
         ? [
             notificationService.notifyAdmins(
               {
                 type: "payment_issue",
                 category: "payment",
                 title: "Approved job needs payment review",
-                message: `Payment capture failed after approval for "${jobTitle}".`,
+                message: `Payout release needs review after approval for "${jobTitle}".`,
                 link: "/payments",
                 entityType: "booking",
                 entityId: String(refreshedBooking._id),
@@ -500,6 +620,8 @@ class BookingService {
     const update = { status };
 
     if (status === "in_progress") {
+      await this.clearStoredProofMedia(booking);
+
       update.startedAt = new Date();
       update.workerCompletionNotes = "";
       update.verificationPhotoUrls = [];

@@ -87,4 +87,7 @@ const supportSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+supportSchema.index({ status: 1, lastMessageAt: -1 });
+supportSchema.index({ user: 1, status: 1, lastMessageAt: -1 });
+
 module.exports = mongoose.model("SupportConversation", supportSchema);

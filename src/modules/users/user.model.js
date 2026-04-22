@@ -167,6 +167,107 @@ const userSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    stripeConnectedAccountId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    stripeConnectCountry: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: "US",
+    },
+    stripeConnectBusinessType: {
+      type: String,
+      enum: ["individual", "company", "non_profit", "government_entity"],
+      default: "individual",
+    },
+    stripeConnectDefaultCurrency: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: "usd",
+    },
+    stripeConnectDetailsSubmitted: {
+      type: Boolean,
+      default: false,
+    },
+    stripeConnectChargesEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    stripeConnectPayoutsEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    stripeConnectRequirementsDue: {
+      type: [String],
+      default: [],
+    },
+    stripeConnectDisabledReason: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeConnectOnboardingCompletedAt: {
+      type: Date,
+      default: null,
+    },
+    stripeConnectLastSyncedAt: {
+      type: Date,
+      default: null,
+    },
+    stripeExternalAccountId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeExternalAccountBankName: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeExternalAccountLast4: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeExternalAccountCurrency: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      default: "",
+    },
+    stripeLastPayoutId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeLastPayoutStatus: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeLastPayoutFailureCode: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeLastPayoutFailureMessage: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeLastPayoutArrivalDate: {
+      type: Date,
+      default: null,
+    },
+    stripeLastPayoutUpdatedAt: {
+      type: Date,
+      default: null,
+    },
     lastLoginAt: {
       type: Date,
     },
@@ -205,5 +306,10 @@ userSchema.pre("validate", function syncRoles(next) {
 
   next();
 });
+
+userSchema.index({ role: 1, isDeleted: 1, createdAt: -1 });
+userSchema.index({ role: 1, status: 1, workerStatus: 1, isDeleted: 1, createdAt: -1 });
+userSchema.index({ roles: 1, isDeleted: 1, createdAt: -1 });
+userSchema.index({ roles: 1, status: 1, workerStatus: 1, isDeleted: 1, createdAt: -1 });
 
 module.exports = mongoose.model("User", userSchema);

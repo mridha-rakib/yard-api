@@ -32,6 +32,44 @@ class PaymentController {
     res.json({ success: true, data: payment });
   }
 
+  async refundPayment(req, res) {
+    const result = await paymentService.refundPayment(
+      req.user,
+      req.params.paymentId,
+      req.body
+    );
+
+    res.json({
+      success: true,
+      message: "Refund created successfully",
+      data: result,
+    });
+  }
+
+  async acceptDispute(req, res) {
+    const result = await paymentService.acceptDispute(req.user, req.params.paymentId);
+
+    res.json({
+      success: true,
+      message: "Dispute accepted successfully",
+      data: result,
+    });
+  }
+
+  async submitDisputeEvidence(req, res) {
+    const result = await paymentService.submitDisputeEvidence(
+      req.user,
+      req.params.paymentId,
+      req.body
+    );
+
+    res.json({
+      success: true,
+      message: "Dispute response submitted successfully",
+      data: result,
+    });
+  }
+
   async handleWebhook(req, res, next) {
     try {
       const result = await paymentService.handleStripeWebhook(

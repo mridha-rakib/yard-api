@@ -98,5 +98,7 @@ const bookingSchema = new mongoose.Schema(
 );
 
 bookingSchema.index({ job: 1 }, { unique: true });
+bookingSchema.index({ worker: 1, status: 1, createdAt: -1 });
+bookingSchema.index({ customer: 1, status: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Booking", bookingSchema);

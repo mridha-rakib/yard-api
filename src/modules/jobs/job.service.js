@@ -9,6 +9,28 @@ const jobRepository = require("./job.repository");
 const notificationService = require("../notifications/notification.service");
 
 class JobService {
+  parseBooleanQuery(value, defaultValue = false) {
+    if (value === undefined || value === null || value === "") {
+      return defaultValue;
+    }
+
+    if (typeof value === "boolean") {
+      return value;
+    }
+
+    const normalizedValue = String(value).trim().toLowerCase();
+
+    if (["true", "1", "yes"].includes(normalizedValue)) {
+      return true;
+    }
+
+    if (["false", "0", "no"].includes(normalizedValue)) {
+      return false;
+    }
+
+    return defaultValue;
+  }
+
   normalizeUrgency(urgency = "flexible") {
     if (urgency === "within24hours") {
       return "within24";
@@ -180,8 +202,15 @@ class JobService {
     return filter;
   }
 
-  async attachOperationalDetails(items = []) {
+  async attachOperationalDetails(
+    items = [],
+    { includeBooking = true, includePayment = true } = {}
+  ) {
     if (!Array.isArray(items) || items.length === 0) {
+      return items;
+    }
+
+    if (!includeBooking && !includePayment) {
       return items;
     }
 
@@ -192,22 +221,26 @@ class JobService {
     }
 
     const [bookings, payments] = await Promise.all([
-      bookingRepository.findMany(
-        { job: { $in: jobIds } },
-        {
-          lean: true,
-          select:
-            "job status scheduledDate scheduledTime notes workerCompletionNotes verificationPhotoUrls verificationVideoUrl verificationSubmittedAt verificationReviewedAt verificationApprovedAt verificationApprovedBy verificationNotes cancelReason startedAt completedAt cancelledAt createdAt",
-        }
-      ),
-      paymentRepository.findMany(
-        { job: { $in: jobIds } },
-        {
-          lean: true,
-          select:
-            "job amount currency status platformFee platformFeePercentage workerPayout paidAt authorizedAt authorizationExpiresAt captureAttemptedAt lastCaptureError createdAt",
-        }
-      ),
+      includeBooking
+        ? bookingRepository.findMany(
+            { job: { $in: jobIds } },
+            {
+              lean: true,
+              select:
+                "job status scheduledDate scheduledTime notes workerCompletionNotes verificationPhotoUrls verificationVideoUrl verificationSubmittedAt verificationReviewedAt verificationApprovedAt verificationApprovedBy verificationNotes cancelReason startedAt completedAt cancelledAt createdAt",
+            }
+          )
+        : [],
+      includePayment
+        ? paymentRepository.findMany(
+            { job: { $in: jobIds } },
+            {
+              lean: true,
+              select:
+                "job amount currency status platformFee platformFeePercentage workerPayout paidAt authorizedAt authorizationExpiresAt captureAttemptedAt lastCaptureError createdAt",
+            }
+          )
+        : [],
     ]);
 
     const bookingsByJobId = new Map(
@@ -270,6 +303,10 @@ class JobService {
     }
 
     const pagination = buildPagination(query);
+    const includeOperational = this.parseBooleanQuery(query.includeOperational, true);
+    const includeBooking = this.parseBooleanQuery(query.includeBooking, includeOperational);
+    const includePayment = this.parseBooleanQuery(query.includePayment, includeOperational);
+    const includeTotal = this.parseBooleanQuery(query.includeTotal, true);
     const filter = {
       status: "new",
       assignedWorker: null,
@@ -286,17 +323,28 @@ class JobService {
     const result = await jobRepository.findManyWithRelations(filter, {
       ...pagination,
       sort: { createdAt: -1 },
+      includeTotal,
+      select:
+        "title serviceType streetAddress city state zipCode status estimatedPrice preferredDate preferredTime pricing assignedWorker customer createdAt",
     });
 
     return {
       ...result,
-      items: await this.attachOperationalDetails(result.items),
+      items: await this.attachOperationalDetails(result.items, {
+        includeBooking,
+        includePayment,
+      }),
     };
   }
 
   async listMyJobs(user, query = {}) {
     const pagination = buildPagination(query);
     const filter = user.role === ROLES.WORKER ? { assignedWorker: user._id } : { customer: user._id };
+    const includeSummary = this.parseBooleanQuery(query.includeSummary, true);
+    const includeOperational = this.parseBooleanQuery(query.includeOperational, true);
+    const includeBooking = this.parseBooleanQuery(query.includeBooking, includeOperational);
+    const includePayment = this.parseBooleanQuery(query.includePayment, includeOperational);
+    const includeTotal = this.parseBooleanQuery(query.includeTotal, true);
 
     if (query.status) {
       filter.status = query.status;
@@ -305,7 +353,25 @@ class JobService {
     const result = await jobRepository.findManyWithRelations(filter, {
       ...pagination,
       sort: { createdAt: -1 },
+      includeTotal,
+      select:
+        "title serviceType streetAddress city state zipCode status estimatedPrice createdAt preferredDate preferredTime assignedWorker customer",
     });
+
+    const items = includeOperational || includeBooking || includePayment
+      ? await this.attachOperationalDetails(result.items, {
+          includeBooking,
+          includePayment,
+        })
+      : result.items;
+
+    if (!includeSummary) {
+      return {
+        ...result,
+        items,
+        summary: null,
+      };
+    }
 
     const [
       newCount,
@@ -323,7 +389,7 @@ class JobService {
 
     return {
       ...result,
-      items: await this.attachOperationalDetails(result.items),
+      items,
       summary: {
         new: newCount,
         assigned: assignedCount,

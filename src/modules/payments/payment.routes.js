@@ -18,6 +18,21 @@ router.post(
   authorize(ROLES.CUSTOMER, ROLES.ADMIN),
   asyncHandler(paymentController.createCheckoutSession)
 );
+router.post(
+  "/:paymentId/refund",
+  authorize(ROLES.ADMIN),
+  asyncHandler(paymentController.refundPayment)
+);
+router.post(
+  "/:paymentId/dispute/accept",
+  authorize(ROLES.ADMIN),
+  asyncHandler(paymentController.acceptDispute)
+);
+router.post(
+  "/:paymentId/dispute/respond",
+  authorize(ROLES.ADMIN),
+  asyncHandler(paymentController.submitDisputeEvidence)
+);
 router.get("/:paymentId", asyncHandler(paymentController.getPaymentById));
 
 module.exports = router;

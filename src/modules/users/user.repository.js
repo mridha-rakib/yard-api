@@ -19,6 +19,10 @@ class UserRepository extends BaseRepository {
     return this.findOne({ phone }, options);
   }
 
+  findByStripeConnectedAccountId(accountId, options = {}) {
+    return this.findOne({ stripeConnectedAccountId: accountId }, options);
+  }
+
   listHeroes(filter = {}, options = {}) {
     return this.paginate(
       combineMongoFilters(filter, buildRoleMembershipFilter(ROLES.WORKER)),

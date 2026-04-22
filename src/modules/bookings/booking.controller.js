@@ -48,8 +48,13 @@ class BookingController {
       req.body
     );
     const captureStatus = result?.paymentCapture?.status || "";
+    const workerTransferStatus = String(result?.paymentCapture?.workerTransferStatus || "")
+      .trim()
+      .toLowerCase();
     const message =
-      captureStatus === "failed" || captureStatus === "payment_not_found"
+      captureStatus === "failed" ||
+      captureStatus === "payment_not_found" ||
+      ["failed", "worker_not_ready", "charge_not_ready"].includes(workerTransferStatus)
         ? "Completion approved, but payment needs review"
         : "Completion approved and payout released";
 

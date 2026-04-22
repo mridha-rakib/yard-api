@@ -47,6 +47,9 @@ const DEFAULT_NOTIFICATION_SETTINGS = {
   paymentIssues: true,
 };
 
+const escapeRegex = (value = "") =>
+  String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 class AdminService {
   getVisibleUsersFilter(filter = {}) {
     return {
@@ -244,10 +247,11 @@ class AdminService {
   }
 
   async getDashboardRecentBookings(limit = 5) {
-    const recentJobs = await jobRepository.model
+    return jobRepository.model
       .find({})
       .sort({ createdAt: -1 })
       .limit(limit)
+      .select("title serviceType status customer assignedWorker createdAt")
       .populate([
         {
           path: "customer",
@@ -259,8 +263,6 @@ class AdminService {
         },
       ])
       .lean();
-
-    return jobService.attachOperationalDetails(recentJobs);
   }
 
   async getDashboardRecentHeroApplications(limit = 5) {
@@ -279,100 +281,171 @@ class AdminService {
 
   async getDashboardStats() {
     const [
-      totalUsers,
-      totalHeroes,
-      activeHeroes,
-      pendingHeroes,
-      totalCustomers,
-      activeCustomers,
-      totalJobs,
-      pendingJobs,
+      userStatsResult,
+      jobStatsResult,
       totalBookings,
-      totalPayments,
+      paymentStatsResult,
       totalSupportConversations,
-      totalRevenueResult,
       recentBookings,
       recentHeroApplications,
     ] = await Promise.all([
-      userRepository.count(this.getVisibleUsersFilter({})),
-      userRepository.count(
-        combineMongoFilters(
-          this.getVisibleUsersFilter({}),
-          buildRoleMembershipFilter(ROLES.WORKER)
-        )
-      ),
-      userRepository.count(
-        combineMongoFilters(
-          this.getVisibleUsersFilter({
-            workerStatus: "approved",
-            status: "active",
-          }),
-          buildRoleMembershipFilter(ROLES.WORKER)
-        )
-      ),
-      userRepository.count(
-        combineMongoFilters(
-          this.getVisibleUsersFilter({ workerStatus: "pending" }),
-          buildRoleMembershipFilter(ROLES.WORKER)
-        )
-      ),
-      userRepository.count(
-        combineMongoFilters(
-          this.getVisibleUsersFilter({}),
-          buildRoleMembershipFilter(ROLES.CUSTOMER)
-        )
-      ),
-      userRepository.count(
-        combineMongoFilters(
-          this.getVisibleUsersFilter({ status: "active" }),
-          buildRoleMembershipFilter(ROLES.CUSTOMER)
-        )
-      ),
-      jobRepository.count({}),
-      jobRepository.count({ status: "new", assignedWorker: null }),
-      bookingRepository.count({}),
-      paymentRepository.count({}),
-      supportRepository.count({}),
-      paymentRepository.model.aggregate([
+      userRepository.model.aggregate([
         {
-          $match: {
-            status: "paid",
+          $match: this.getVisibleUsersFilter({}),
+        },
+        {
+          $addFields: {
+            normalizedRoles: {
+              $setUnion: [
+                {
+                  $cond: [{ $isArray: "$roles" }, "$roles", []],
+                },
+                [{ $ifNull: ["$role", ""] }],
+              ],
+            },
+          },
+        },
+        {
+          $addFields: {
+            isHero: { $in: [ROLES.WORKER, "$normalizedRoles"] },
+            isCustomer: { $in: [ROLES.CUSTOMER, "$normalizedRoles"] },
           },
         },
         {
           $group: {
             _id: null,
-            totalAmount: { $sum: "$amount" },
-            totalPlatformFee: { $sum: "$platformFee" },
-            totalHeroPayout: { $sum: "$workerPayout" },
+            totalUsers: { $sum: 1 },
+            totalHeroes: {
+              $sum: { $cond: ["$isHero", 1, 0] },
+            },
+            activeHeroes: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      "$isHero",
+                      { $eq: ["$workerStatus", "approved"] },
+                      { $eq: ["$status", "active"] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            pendingHeroes: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: ["$isHero", { $eq: ["$workerStatus", "pending"] }],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            totalCustomers: {
+              $sum: { $cond: ["$isCustomer", 1, 0] },
+            },
+            activeCustomers: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: ["$isCustomer", { $eq: ["$status", "active"] }],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
           },
         },
       ]),
+      jobRepository.model.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalJobs: { $sum: 1 },
+            pendingJobs: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ["$status", "new"] },
+                      { $eq: ["$assignedWorker", null] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+          },
+        },
+      ]),
+      bookingRepository.count({}),
+      paymentRepository.model.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalPayments: { $sum: 1 },
+            totalAmount: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "paid"] }, "$amount", 0],
+              },
+            },
+            totalPlatformFee: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "paid"] }, "$platformFee", 0],
+              },
+            },
+            totalHeroPayout: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "paid"] }, "$workerPayout", 0],
+              },
+            },
+          },
+        },
+      ]),
+      supportRepository.count({}),
       this.getDashboardRecentBookings(),
       this.getDashboardRecentHeroApplications(),
     ]);
 
-    const revenue = totalRevenueResult[0] || {
+    const userStats = userStatsResult[0] || {
+      totalUsers: 0,
+      totalHeroes: 0,
+      activeHeroes: 0,
+      pendingHeroes: 0,
+      totalCustomers: 0,
+      activeCustomers: 0,
+    };
+    const jobStats = jobStatsResult[0] || {
+      totalJobs: 0,
+      pendingJobs: 0,
+    };
+    const paymentStats = paymentStatsResult[0] || {
+      totalPayments: 0,
       totalAmount: 0,
       totalPlatformFee: 0,
       totalHeroPayout: 0,
     };
 
     return {
-      totalUsers,
-      totalHeroes,
-      activeHeroes,
-      pendingHeroes,
-      totalCustomers,
-      activeCustomers,
-      totalJobs,
-      pendingJobs,
+      totalUsers: userStats.totalUsers,
+      totalHeroes: userStats.totalHeroes,
+      activeHeroes: userStats.activeHeroes,
+      pendingHeroes: userStats.pendingHeroes,
+      totalCustomers: userStats.totalCustomers,
+      activeCustomers: userStats.activeCustomers,
+      totalJobs: jobStats.totalJobs,
+      pendingJobs: jobStats.pendingJobs,
       totalBookings,
-      totalPayments,
+      totalPayments: paymentStats.totalPayments,
       totalSupportConversations,
-      totalRevenue: revenue.totalAmount,
-      totalPlatformFee: revenue.totalPlatformFee,
-      totalHeroPayout: revenue.totalHeroPayout,
+      totalRevenue: paymentStats.totalAmount,
+      totalPlatformFee: paymentStats.totalPlatformFee,
+      totalHeroPayout: paymentStats.totalHeroPayout,
       recentBookings,
       recentHeroApplications,
     };
@@ -916,7 +989,12 @@ class AdminService {
     }
 
     if (normalizedSearch) {
-      const searchPattern = { $regex: normalizedSearch, $options: "i" };
+      if (mongoose.Types.ObjectId.isValid(normalizedSearch)) {
+        filter._id = new mongoose.Types.ObjectId(normalizedSearch);
+        return filter;
+      }
+
+      const searchPattern = { $regex: escapeRegex(normalizedSearch), $options: "i" };
       filter.$or = [
         { title: searchPattern },
         { fullName: searchPattern },
@@ -926,10 +1004,6 @@ class AdminService {
         { city: searchPattern },
         { zipCode: searchPattern },
       ];
-
-      if (mongoose.Types.ObjectId.isValid(normalizedSearch)) {
-        filter.$or.unshift({ _id: new mongoose.Types.ObjectId(normalizedSearch) });
-      }
     }
 
     return filter;
@@ -938,19 +1012,57 @@ class AdminService {
   async listBookings(query = {}) {
     const pagination = buildPagination(query);
     const filter = this.buildBookingListFilter(query);
-    const result = await jobRepository.findManyWithRelations(filter, {
+    return jobRepository.findManyForAdminList(filter, {
       ...pagination,
       sort: { createdAt: -1 },
+      select:
+        "title serviceType streetAddress city state zipCode urgency status fullName email preferredDate preferredTime customer assignedWorker createdAt",
     });
-
-    return {
-      ...result,
-      items: await jobService.attachOperationalDetails(result.items),
-    };
   }
 
   async getBookingById(adminUser, jobId) {
-    return jobService.getJobById(adminUser, jobId);
+    if (!hasRole(adminUser, ROLES.ADMIN)) {
+      throw new AppError("Only admins can view booking details", 403);
+    }
+
+    const job = await jobRepository.findById(jobId, {
+      lean: true,
+      select:
+        "title serviceType serviceId serviceCategoryLabel streetAddress city state zipCode urgency status estimatedPrice preferredDate preferredTime paymentStatus fullName phoneNumber email jobDescription photos pricing assignedWorker customer createdAt",
+      populate: [
+        {
+          path: "customer",
+          select: "name email phone",
+        },
+        {
+          path: "assignedWorker",
+          select: "name email phone skills",
+        },
+      ],
+    });
+
+    if (!job) {
+      throw new AppError("Job not found", 404);
+    }
+
+    const [booking, payment] = await Promise.all([
+      bookingRepository.findByJob(jobId, {
+        lean: true,
+        select:
+          "job customer worker status scheduledDate scheduledTime notes workerCompletionNotes verificationPhotoUrls verificationVideoUrl verificationSubmittedAt verificationReviewedAt verificationApprovedAt verificationApprovedBy verificationNotes cancelReason startedAt completedAt cancelledAt createdAt",
+      }),
+      paymentRepository.findByJob(jobId, {
+        lean: true,
+        select:
+          "job booking amount currency status platformFee platformFeePercentage workerPayout paidAt authorizedAt authorizationExpiresAt paymentMethod workerTransferStatus refundReason stripeRefundStatus stripeDisputeStatus createdAt",
+      }),
+    ]);
+
+    return {
+      ...job,
+      booking: booking || null,
+      payment: payment || null,
+    };
   }
 
   async updateBookingStatus(adminUser, bookingId, status) {

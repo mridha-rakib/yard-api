@@ -95,6 +95,47 @@ const paymentSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    stripeChargeId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    stripeTransferGroup: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    stripeTransferId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeLatestTransferReversalId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeTransferReversedAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    stripeTransferReversedAt: {
+      type: Date,
+      default: null,
+    },
+    stripeTransferAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    stripeTransferDestinationAccountId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     stripeLastEventId: {
       type: String,
       trim: true,
@@ -108,6 +149,87 @@ const paymentSchema = new mongoose.Schema(
     stripeLastSyncedAt: {
       type: Date,
       default: null,
+    },
+    stripeLatestRefundId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeRefundStatus: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeRefundAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    refundedAt: {
+      type: Date,
+      default: null,
+    },
+    refundReason: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    refundFailureReason: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeDisputeId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    stripeDisputeStatus: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeDisputeReason: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeDisputeAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    stripeDisputeEvidenceDueBy: {
+      type: Date,
+      default: null,
+    },
+    stripeDisputeSubmittedAt: {
+      type: Date,
+      default: null,
+    },
+    stripeDisputeLastAction: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    stripeDisputeLastActionBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    stripeDisputeFundsWithdrawnAt: {
+      type: Date,
+      default: null,
+    },
+    stripeDisputeClosedAt: {
+      type: Date,
+      default: null,
+    },
+    stripeDisputeOutcome: {
+      type: String,
+      trim: true,
+      default: "",
     },
     checkoutUrl: {
       type: String,
@@ -139,6 +261,35 @@ const paymentSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    workerTransferStatus: {
+      type: String,
+      enum: [
+        "pending",
+        "not_ready",
+        "pending_transfer",
+        "transferred",
+        "paid_out",
+        "failed",
+      ],
+      default: "pending",
+    },
+    workerTransferFailedAt: {
+      type: Date,
+      default: null,
+    },
+    workerTransferredAt: {
+      type: Date,
+      default: null,
+    },
+    workerLastPayoutAt: {
+      type: Date,
+      default: null,
+    },
+    workerLastPayoutFailure: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     reconciliationLockedAt: {
       type: Date,
       default: null,
@@ -156,5 +307,15 @@ const paymentSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+paymentSchema.index({ customer: 1, status: 1, createdAt: -1 });
+paymentSchema.index({ worker: 1, status: 1, createdAt: -1 });
+paymentSchema.index({ status: 1, paidAt: -1, createdAt: -1 });
+paymentSchema.index({ status: 1, paymentMethod: 1, createdAt: -1 });
+paymentSchema.index({ gateway: 1, status: 1, paymentMethod: 1, createdAt: -1 });
+paymentSchema.index({ job: 1, status: 1, createdAt: -1 });
+paymentSchema.index({ booking: 1, status: 1, createdAt: -1 });
+paymentSchema.index({ stripeRefundStatus: 1, createdAt: -1 });
+paymentSchema.index({ stripeDisputeStatus: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Payment", paymentSchema);

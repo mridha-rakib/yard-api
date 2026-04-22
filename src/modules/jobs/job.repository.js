@@ -65,6 +65,22 @@ class JobRepository extends BaseRepository {
       ],
     });
   }
+
+  findManyForAdminList(filter = {}, options = {}) {
+    return this.paginate(filter, {
+      ...options,
+      populate: [
+        {
+          path: "customer",
+          select: "name email",
+        },
+        {
+          path: "assignedWorker",
+          select: "name",
+        },
+      ],
+    });
+  }
 }
 
 module.exports = new JobRepository();

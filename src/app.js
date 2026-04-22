@@ -1,5 +1,6 @@
 const cors = require("cors");
 const express = require("express");
+const path = require("path");
 const pinoHttp = require("pino-http");
 const env = require("./config/env");
 const logger = require("./config/logger");
@@ -43,6 +44,7 @@ app.post(
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads")));
 
 app.use(env.apiPrefix, apiRouter);
 
