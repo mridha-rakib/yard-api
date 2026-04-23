@@ -126,6 +126,12 @@ const SERVICE_CATEGORIES = [
     label: "Vehicle Services",
     services: [
       {
+        id: "test-live-payment",
+        title: "Live Payment Test Job",
+        pricingType: "fixed",
+        fixedPrice: 2,
+      },
+      {
         id: "vehicle-gas-filling",
         title: "Gas Filling",
         pricingType: "fixed",
