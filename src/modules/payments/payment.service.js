@@ -342,14 +342,16 @@ class PaymentService {
     };
   }
 
-  calculateAmounts(amount) {
-    const numericAmount = Number(amount || 0);
+  calculateAmounts(jobSubtotal) {
+    const numericJobSubtotal = Number(jobSubtotal || 0);
     const platformFeePercentage = env.defaultPlatformFeePercentage;
-    const platformFee = Number(((numericAmount * platformFeePercentage) / 100).toFixed(2));
-    const workerPayout = Number((numericAmount - platformFee).toFixed(2));
+    const platformFee = Number(
+      ((numericJobSubtotal * platformFeePercentage) / 100).toFixed(2)
+    );
+    const workerPayout = Number((numericJobSubtotal - platformFee).toFixed(2));
 
     return {
-      amount: numericAmount,
+      amount: numericJobSubtotal,
       platformFeePercentage,
       platformFee,
       workerPayout,
@@ -1427,7 +1429,8 @@ class PaymentService {
     jobService.validateCreatePayload(normalizedJobDraft);
 
     const { quote, service } = this.resolveCheckoutQuote(payload, normalizedJobDraft);
-    const pricing = this.calculateAmounts(quote.finalPrice);
+    const jobSubtotal = quote.finalPrice;
+    const pricing = this.calculateAmounts(jobSubtotal);
 
     if (!pricing.amount) {
       throw new AppError("A valid amount is required to create a payment session", 400);
