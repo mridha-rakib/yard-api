@@ -738,10 +738,6 @@ class AuthService {
 
     const tokens = await this.createSessionTokens(updatedUser, sessionMetadata);
 
-    if (sessionMetadata.currentSessionId) {
-      await authSessionRepository.revokeById(sessionMetadata.currentSessionId, "role_switched");
-    }
-
     return this.buildAuthResponse(updatedUser, tokens, {
       metadata: this.buildVerificationMetadata(updatedUser, null),
     });
