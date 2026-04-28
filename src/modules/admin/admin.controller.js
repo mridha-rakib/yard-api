@@ -96,6 +96,16 @@ class AdminController {
     res.json({ success: true, ...result });
   }
 
+  async getPricingRules(req, res) {
+    const pricingRules = await adminService.getPricingRules();
+    res.json({ success: true, data: pricingRules });
+  }
+
+  async updatePricingRules(req, res) {
+    const pricingRules = await adminService.updatePricingRules(req.user, req.body);
+    res.json({ success: true, message: "Pricing rules updated", data: pricingRules });
+  }
+
   async getSettings(req, res) {
     const settings = await adminService.getSettings(req.user._id);
     res.json({ success: true, data: settings });

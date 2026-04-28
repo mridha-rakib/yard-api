@@ -279,6 +279,8 @@ class PaymentRepository extends BaseRepository {
             {
               $project: {
                 amount: 1,
+                jobSubtotal: 1,
+                bookingFee: 1,
                 currency: 1,
                 platformFeePercentage: 1,
                 platformFee: 1,
@@ -319,6 +321,7 @@ class PaymentRepository extends BaseRepository {
                     $group: {
                       _id: null,
                       totalAmount: { $sum: { $ifNull: ["$amount", 0] } },
+                      totalBookingFee: { $sum: { $ifNull: ["$bookingFee", 0] } },
                       totalPlatformFee: { $sum: { $ifNull: ["$platformFee", 0] } },
                       totalHeroPayout: { $sum: { $ifNull: ["$workerPayout", 0] } },
                       pendingPayments: {

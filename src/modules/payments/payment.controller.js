@@ -1,6 +1,11 @@
 const paymentService = require("./payment.service");
 
 class PaymentController {
+  async getPricingRules(req, res) {
+    const pricingRules = await paymentService.getPublicPricingRules();
+    res.json({ success: true, data: pricingRules });
+  }
+
   async createCheckoutSession(req, res) {
     const result = await paymentService.createJobCheckoutSession(req.user, req.body);
     res.status(201).json({

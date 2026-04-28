@@ -32,6 +32,16 @@ const paymentSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+    jobSubtotal: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    bookingFee: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     currency: {
       type: String,
       default: "USD",

@@ -30,6 +30,8 @@ router.patch(
 );
 router.get("/payments", asyncHandler(adminController.listPayments));
 router.get("/support", asyncHandler(adminController.listSupportConversations));
+router.get("/pricing", asyncHandler(adminController.getPricingRules));
+router.put("/pricing", asyncHandler(adminController.updatePricingRules));
 router.get("/settings", asyncHandler(adminController.getSettings));
 router.patch("/settings", asyncHandler(adminController.updateSettings));
 

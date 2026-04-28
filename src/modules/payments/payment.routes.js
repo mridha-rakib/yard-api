@@ -6,6 +6,8 @@ const { ROLES } = require("../../constants/roles");
 
 const router = express.Router();
 
+router.get("/pricing-rules", asyncHandler(paymentController.getPricingRules));
+
 router.use(authenticate);
 router.get("/", asyncHandler(paymentController.listPayments));
 router.get(

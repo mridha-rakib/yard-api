@@ -12,7 +12,12 @@ const jobRepository = require("../jobs/job.repository");
 const jobService = require("../jobs/job.service");
 const notificationService = require("../notifications/notification.service");
 const userRepository = require("../users/user.repository");
-const { calculateQuote, findServiceDefinition } = require("./pricing-engine");
+const {
+  calculateBundleQuote,
+  calculateQuote,
+  findServiceDefinition,
+  getPricingConfig,
+} = require("./pricing-engine");
 const stripeWebhookEventRepository = require("./stripe-webhook-event.repository");
 
 const RECONCILIATION_LOCK_TIMEOUT_MS = 60 * 1000;
@@ -20,6 +25,18 @@ const REUSABLE_PENDING_CHECKOUT_WINDOW_MS = 10 * 60 * 1000;
 const WEBHOOK_EVENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 const WEBHOOK_EVENT_BATCH_SIZE = 10;
 const WEBHOOK_EVENT_INTERVAL_MS = 15 * 1000;
+
+const firstNonEmptyArray = (...values) =>
+  values.find((value) => Array.isArray(value) && value.length > 0) || [];
+
+const firstNonEmptyObject = (...values) =>
+  values.find(
+    (value) =>
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.keys(value).length > 0
+  ) || {};
 
 class PaymentService {
   constructor() {
@@ -304,6 +321,18 @@ class PaymentService {
     return `${successUrl.origin}${successUrl.pathname}?session_id={CHECKOUT_SESSION_ID}`;
   }
 
+  async getPublicPricingRules() {
+    const config = await getPricingConfig();
+
+    return {
+      ...config,
+      categories: config.categories.map((category) => ({
+        ...category,
+        services: category.services.filter((service) => service.isActive !== false),
+      })),
+    };
+  }
+
   isAuthorizationExpired(paymentIntent = null, payment = null) {
     const expiresAt =
       this.getStripeCaptureExpiry(paymentIntent) ||
@@ -317,20 +346,40 @@ class PaymentService {
     return new Date(expiresAt).getTime() <= Date.now();
   }
 
-  resolveCheckoutQuote(payload, normalizedJobDraft) {
+  async resolveCheckoutQuote(payload, normalizedJobDraft) {
+    const bundleServiceIds = firstNonEmptyArray(
+      payload.jobData?.bundleServiceIds || [],
+      payload.bundleServiceIds || [],
+      normalizedJobDraft.pricing?.bundleServiceIds || []
+    );
     const requestedServiceId =
       payload.jobData?.serviceId ||
       payload.serviceId ||
       normalizedJobDraft.serviceId ||
       normalizedJobDraft.serviceType ||
       "";
-    const pricingInput =
-      payload.jobData?.pricingInput ||
-      payload.pricingInput ||
-      normalizedJobDraft.pricing?.input ||
-      {};
-    const quote = calculateQuote(requestedServiceId, pricingInput);
-    const service = findServiceDefinition(requestedServiceId);
+    const pricingInput = firstNonEmptyObject(
+      payload.jobData?.pricingInput,
+      payload.pricingInput,
+      normalizedJobDraft.pricing?.input
+    );
+
+    if (Array.isArray(bundleServiceIds) && bundleServiceIds.length > 0) {
+      const quote = await calculateBundleQuote(bundleServiceIds, pricingInput);
+
+      return {
+        quote,
+        service: {
+          id: quote.serviceId,
+          title: quote.serviceTitle,
+          categoryId: "bundle",
+          categoryLabel: "Service Bundle",
+        },
+      };
+    }
+
+    const quote = await calculateQuote(requestedServiceId, pricingInput);
+    const service = await findServiceDefinition(requestedServiceId);
 
     if (!service) {
       throw new AppError("Selected service is not available for checkout", 400);
@@ -344,14 +393,18 @@ class PaymentService {
 
   calculateAmounts(jobSubtotal) {
     const numericJobSubtotal = Number(jobSubtotal || 0);
+    const bookingFee = Math.max(0, Number(env.customerBookingFeeAmount || 0));
     const platformFeePercentage = env.defaultPlatformFeePercentage;
     const platformFee = Number(
       ((numericJobSubtotal * platformFeePercentage) / 100).toFixed(2)
     );
     const workerPayout = Number((numericJobSubtotal - platformFee).toFixed(2));
+    const amount = Number((numericJobSubtotal + bookingFee).toFixed(2));
 
     return {
-      amount: numericJobSubtotal,
+      amount,
+      jobSubtotal: numericJobSubtotal,
+      bookingFee,
       platformFeePercentage,
       platformFee,
       workerPayout,
@@ -511,6 +564,7 @@ class PaymentService {
       preferredTime: String(normalizedJobDraft?.preferredTime || ""),
       amount: Number(pricing?.amount || 0),
       currency: String(currency || "USD").toUpperCase(),
+      pricingQuote: normalizedJobDraft?.pricing || null,
     };
 
     return crypto
@@ -1428,11 +1482,11 @@ class PaymentService {
     const normalizedJobDraft = jobService.mapCreatePayload(user, payload.jobData || payload);
     jobService.validateCreatePayload(normalizedJobDraft);
 
-    const { quote, service } = this.resolveCheckoutQuote(payload, normalizedJobDraft);
+    const { quote, service } = await this.resolveCheckoutQuote(payload, normalizedJobDraft);
     const jobSubtotal = quote.finalPrice;
     const pricing = this.calculateAmounts(jobSubtotal);
 
-    if (!pricing.amount) {
+    if (!pricing.jobSubtotal) {
       throw new AppError("A valid amount is required to create a payment session", 400);
     }
 
@@ -1443,8 +1497,8 @@ class PaymentService {
       normalizedJobDraft.serviceCategoryId || service.categoryId || "";
     normalizedJobDraft.serviceCategoryLabel =
       normalizedJobDraft.serviceCategoryLabel || service.categoryLabel || "";
-    normalizedJobDraft.estimatedPrice = pricing.amount;
-    normalizedJobDraft.priceQuoted = pricing.amount;
+    normalizedJobDraft.estimatedPrice = pricing.jobSubtotal;
+    normalizedJobDraft.priceQuoted = pricing.jobSubtotal;
     normalizedJobDraft.pricing = quote;
     const currency = payload.currency || "USD";
     const checkoutFingerprint = this.buildCheckoutFingerprint(
@@ -1476,6 +1530,8 @@ class PaymentService {
       reusablePayment && this.isRecentPendingCheckout(reusablePayment)
         ? await paymentRepository.updateById(reusablePayment._id, {
             amount: pricing.amount,
+            jobSubtotal: pricing.jobSubtotal,
+            bookingFee: pricing.bookingFee,
             currency,
             platformFeePercentage: pricing.platformFeePercentage,
             platformFee: pricing.platformFee,
@@ -1504,6 +1560,8 @@ class PaymentService {
         : await paymentRepository.create({
             customer: user._id,
             amount: pricing.amount,
+            jobSubtotal: pricing.jobSubtotal,
+            bookingFee: pricing.bookingFee,
             currency,
             platformFeePercentage: pricing.platformFeePercentage,
             platformFee: pricing.platformFee,
@@ -1546,10 +1604,21 @@ class PaymentService {
                   name: normalizedJobDraft.title,
                   description: normalizedJobDraft.jobDescription,
                 },
-                unit_amount: Math.round(pricing.amount * 100),
+                unit_amount: Math.round(pricing.jobSubtotal * 100),
               },
               quantity: 1,
             },
+            ...(pricing.bookingFee > 0 ? [{
+              price_data: {
+                currency: String(currency || "usd").toLowerCase(),
+                product_data: {
+                  name: "Service Fee",
+                  description: "YardHero booking fee",
+                },
+                unit_amount: Math.round(pricing.bookingFee * 100),
+              },
+              quantity: 1,
+            }] : []),
           ],
           success_url: this.buildCheckoutSuccessUrl(),
           cancel_url: cancelUrl,

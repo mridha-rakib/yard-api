@@ -94,6 +94,7 @@ const env = {
   awsS3PublicBaseUrl: cleanValue(process.env.AWS_S3_PUBLIC_BASE_URL),
   awsS3Prefix: cleanValue(process.env.AWS_S3_PREFIX, "proof-media"),
   defaultPlatformFeePercentage: parseNumber(process.env.DEFAULT_PLATFORM_FEE_PERCENTAGE, 12),
+  customerBookingFeeAmount: parseNumber(process.env.CUSTOMER_BOOKING_FEE_AMOUNT, 3),
   adminName: cleanValue(process.env.ADMIN_NAME, "John Administrator"),
   adminEmail: cleanValue(process.env.ADMIN_EMAIL, "admin@yardworkpro.com").toLowerCase(),
   adminPhone: cleanValue(process.env.ADMIN_PHONE, "+15550000001"),
