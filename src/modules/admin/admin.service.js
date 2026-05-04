@@ -16,6 +16,7 @@ const applicationRepository = require("../applications/application.repository");
 const supportRepository = require("../support/support.repository");
 const contentRepository = require("../content/content.repository");
 const authSessionRepository = require("../auth/auth-session.repository");
+const testimonialRepository = require("../testimonials/testimonial.repository");
 const notificationService = require("../notifications/notification.service");
 const {
   getPricingConfig,
@@ -700,6 +701,119 @@ class AdminService {
       default:
         return { createdAt: -1, _id: -1 };
     }
+  }
+
+  getTestimonialListSort(sortValue = "newest") {
+    switch (String(sortValue || "newest").toLowerCase()) {
+      case "oldest":
+        return { updatedAt: 1, createdAt: 1, _id: 1 };
+      case "highest_rating":
+        return { rating: -1, updatedAt: -1, _id: -1 };
+      case "lowest_rating":
+        return { rating: 1, updatedAt: -1, _id: -1 };
+      default:
+        return { updatedAt: -1, createdAt: -1, _id: -1 };
+    }
+  }
+
+  async listTestimonials(query = {}) {
+    const pagination = buildPagination(query);
+    const sort = this.getTestimonialListSort(query.sort);
+    const skip = (pagination.page - 1) * pagination.limit;
+    const normalizedSearch = String(query.search || "").trim();
+    const searchMatch = {};
+
+    if (normalizedSearch) {
+      const searchPattern = { $regex: escapeRegex(normalizedSearch), $options: "i" };
+      searchMatch.$or = [
+        { displayName: searchPattern },
+        { text: searchPattern },
+        { location: searchPattern },
+        { "customerAccount.name": searchPattern },
+        { "customerAccount.email": searchPattern },
+        { "customerAccount.phone": searchPattern },
+      ];
+
+      if (mongoose.Types.ObjectId.isValid(normalizedSearch)) {
+        const searchObjectId = new mongoose.Types.ObjectId(normalizedSearch);
+        searchMatch.$or.push({ _id: searchObjectId }, { customer: searchObjectId });
+      }
+    }
+
+    const [result] = await testimonialRepository.model.aggregate([
+      {
+        $lookup: {
+          from: userRepository.model.collection.name,
+          localField: "customer",
+          foreignField: "_id",
+          as: "customerAccount",
+        },
+      },
+      {
+        $unwind: {
+          path: "$customerAccount",
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+      ...(normalizedSearch ? [{ $match: searchMatch }] : []),
+      {
+        $facet: {
+          items: [
+            { $sort: sort },
+            { $skip: skip },
+            { $limit: pagination.limit },
+            {
+              $project: {
+                _id: 1,
+                id: { $toString: "$_id" },
+                customerId: {
+                  $cond: [
+                    { $ne: ["$customer", null] },
+                    { $toString: "$customer" },
+                    "",
+                  ],
+                },
+                displayName: 1,
+                rating: 1,
+                text: 1,
+                location: 1,
+                createdAt: 1,
+                updatedAt: 1,
+                customer: {
+                  _id: "$customerAccount._id",
+                  id: {
+                    $cond: [
+                      { $ne: ["$customerAccount._id", null] },
+                      { $toString: "$customerAccount._id" },
+                      "",
+                    ],
+                  },
+                  name: "$customerAccount.name",
+                  email: "$customerAccount.email",
+                  phone: "$customerAccount.phone",
+                  status: "$customerAccount.status",
+                  profilePhotoUrl: "$customerAccount.profilePhotoUrl",
+                  emailVerifiedAt: "$customerAccount.emailVerifiedAt",
+                  createdAt: "$customerAccount.createdAt",
+                },
+              },
+            },
+          ],
+          totalCount: [{ $count: "count" }],
+        },
+      },
+    ]);
+
+    const total = result?.totalCount?.[0]?.count || 0;
+
+    return {
+      items: result?.items || [],
+      pagination: {
+        ...pagination,
+        total,
+        totalPages: Math.ceil(total / pagination.limit) || 1,
+      },
+    };
   }
 
   async listCustomers(query = {}) {

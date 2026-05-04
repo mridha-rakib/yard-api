@@ -54,6 +54,11 @@ class AdminController {
     res.json({ success: true, data: customer });
   }
 
+  async listTestimonials(req, res) {
+    const result = await adminService.listTestimonials(req.query);
+    res.json({ success: true, ...result });
+  }
+
   async listBookings(req, res) {
     const result = await adminService.listBookings(req.query);
     res.json({ success: true, ...result });
