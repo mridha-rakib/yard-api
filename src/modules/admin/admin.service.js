@@ -18,6 +18,7 @@ const contentRepository = require("../content/content.repository");
 const authSessionRepository = require("../auth/auth-session.repository");
 const testimonialRepository = require("../testimonials/testimonial.repository");
 const notificationService = require("../notifications/notification.service");
+const emailService = require("../../services/email.service");
 const {
   getPricingConfig,
   savePricingConfig,
@@ -514,6 +515,8 @@ class AdminService {
 
   async updateHeroStatus(workerId, workerStatus) {
     const worker = await this.getHeroById(workerId);
+    const shouldSendApprovalEmail =
+      workerStatus === "approved" && worker.workerStatus !== "approved";
     await userRepository.updateById(worker._id, { workerStatus });
     const updatedHero = await this.getHeroById(worker._id);
     await Promise.allSettled([
@@ -533,6 +536,12 @@ class AdminService {
         entityType: "user",
         entityId: String(updatedHero._id),
       }),
+      shouldSendApprovalEmail
+        ? emailService.sendWorkerWelcomeEmail({
+            to: updatedHero.email,
+            name: updatedHero.name,
+          })
+        : Promise.resolve(),
     ]);
     return updatedHero;
   }

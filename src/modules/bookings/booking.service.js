@@ -6,6 +6,7 @@ const bookingRepository = require("./booking.repository");
 const jobRepository = require("../jobs/job.repository");
 const paymentRepository = require("../payments/payment.repository");
 const notificationService = require("../notifications/notification.service");
+const emailService = require("../../services/email.service");
 const { isWorkerPayoutReady } = require("../../utils/worker-payouts");
 const { assertDataUrlMaxBytes, assertDataUrlMimeType } = require("../../utils/data-url");
 const {
@@ -26,6 +27,34 @@ const formatStatusLabel = (status = "") =>
     .join(" ");
 
 class BookingService {
+  sendCustomerHeroAssignedEmail(booking) {
+    const customer = booking?.customer || {};
+    const customerEmail = String(customer?.email || "").trim();
+
+    if (!customerEmail) {
+      return Promise.resolve(null);
+    }
+
+    return emailService.sendCustomerHeroAssignedEmail({
+      to: customerEmail,
+      customerName: customer?.name || "",
+    });
+  }
+
+  sendCustomerJobCompletedPendingApprovalEmail(booking) {
+    const customer = booking?.customer || {};
+    const customerEmail = String(customer?.email || "").trim();
+
+    if (!customerEmail) {
+      return Promise.resolve(null);
+    }
+
+    return emailService.sendCustomerJobCompletedPendingApprovalEmail({
+      to: customerEmail,
+      customerName: customer?.name || "",
+    });
+  }
+
   async clearStoredProofMedia(booking = {}) {
     const proofMediaUrls = [
       ...(Array.isArray(booking?.verificationPhotoUrls) ? booking.verificationPhotoUrls : []),
@@ -114,6 +143,7 @@ class BookingService {
         entityId: String(booking._id),
         actorUserId: worker._id || null,
       }),
+      this.sendCustomerHeroAssignedEmail(hydratedBooking),
     ]);
 
     return hydratedBooking;
@@ -174,6 +204,7 @@ class BookingService {
           entityId: String(booking._id),
           actorUserId: worker._id,
         }),
+        this.sendCustomerHeroAssignedEmail(hydratedBooking),
       ]);
 
       return hydratedBooking;
@@ -388,12 +419,13 @@ class BookingService {
           message: `"${jobTitle}" was marked complete and is now waiting for YardHero verification.`,
           link: getCustomerBookingLink(jobId),
           entityType: "booking",
-          entityId: String(refreshedBooking._id),
-          actorUserId: user._id,
-        }),
-        notificationService.createForUser(refreshedBooking.worker, {
-          type: "booking_pending_verification",
-          recipientRole: ROLES.WORKER,
+        entityId: String(refreshedBooking._id),
+        actorUserId: user._id,
+      }),
+      this.sendCustomerJobCompletedPendingApprovalEmail(refreshedBooking),
+      notificationService.createForUser(refreshedBooking.worker, {
+        type: "booking_pending_verification",
+        recipientRole: ROLES.WORKER,
           category: "booking",
           title: "Completion proof submitted",
           message: `You submitted photo and video proof for "${jobTitle}". Payment will be released after admin approval.`,

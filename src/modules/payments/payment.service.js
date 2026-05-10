@@ -5,12 +5,18 @@ const logger = require("../../config/logger");
 const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const { ROLES } = require("../../constants/roles");
-const { hasAnyRole, hasRole } = require("../../utils/user-roles");
+const {
+  buildRoleMembershipFilter,
+  combineMongoFilters,
+  hasAnyRole,
+  hasRole,
+} = require("../../utils/user-roles");
 const { isWorkerPayoutReady } = require("../../utils/worker-payouts");
 const paymentRepository = require("./payment.repository");
 const jobRepository = require("../jobs/job.repository");
 const jobService = require("../jobs/job.service");
 const notificationService = require("../notifications/notification.service");
+const emailService = require("../../services/email.service");
 const userRepository = require("../users/user.repository");
 const {
   calculateBundleQuote,
@@ -940,6 +946,71 @@ class PaymentService {
     });
   }
 
+  async getApprovedWorkerEmailRecipients() {
+    return userRepository.findMany(
+      combineMongoFilters(
+        {
+          isDeleted: { $ne: true },
+          status: "active",
+          workerStatus: "approved",
+          email: { $exists: true, $ne: "" },
+        },
+        buildRoleMembershipFilter(ROLES.WORKER)
+      ),
+      {
+        lean: true,
+        select: "_id name email role roles workerStatus status",
+      }
+    );
+  }
+
+  async sendNewJobAvailableEmailToWorkers(job, payment) {
+    if (!job?._id) {
+      return {
+        sent: 0,
+        failed: 0,
+      };
+    }
+
+    const workers = await this.getApprovedWorkerEmailRecipients();
+
+    if (!workers.length) {
+      return {
+        sent: 0,
+        failed: 0,
+      };
+    }
+
+    const jobLink = `/all-jobs/job-details?jobId=${job._id}`;
+    const results = await Promise.allSettled(
+      workers.map((worker) =>
+        emailService.sendNewJobAvailableEmail({
+          to: worker.email,
+          job,
+          payment,
+          jobLink,
+        })
+      )
+    );
+    const failed = results.filter((result) => result.status === "rejected");
+
+    if (failed.length) {
+      logger.warn(
+        {
+          jobId: String(job._id),
+          failedCount: failed.length,
+          recipientCount: workers.length,
+        },
+        "Some new job available emails failed to send"
+      );
+    }
+
+    return {
+      sent: results.length - failed.length,
+      failed: failed.length,
+    };
+  }
+
   async createTransferReversalForAdjustment(
     payment,
     amount,
@@ -1220,6 +1291,7 @@ class PaymentService {
         )
       );
       const shouldNotify = latestPayment.status !== "authorized" || !latestPayment.job;
+      const shouldNotifyWorkers = !latestPayment.job;
 
       if (shouldNotify) {
         const jobTitle =
@@ -1246,6 +1318,9 @@ class PaymentService {
             entityId: String(jobId),
             actorUserId: latestPayment.customer,
           }),
+          shouldNotifyWorkers
+            ? this.sendNewJobAvailableEmailToWorkers(ensuredJob, updatedPayment)
+            : Promise.resolve(),
         ]);
       }
 
@@ -1345,6 +1420,7 @@ class PaymentService {
         context
       );
       const shouldNotify = latestPayment.status !== "paid" || !latestPayment.job;
+      const shouldNotifyWorkers = !latestPayment.job;
 
       if (shouldNotify) {
         const jobTitle =
@@ -1371,6 +1447,9 @@ class PaymentService {
             entityId: String(jobId),
             actorUserId: latestPayment.customer,
           }),
+          shouldNotifyWorkers
+            ? this.sendNewJobAvailableEmailToWorkers(ensuredJob, updatedPayment)
+            : Promise.resolve(),
         ]);
       }
 
