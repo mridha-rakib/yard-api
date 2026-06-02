@@ -56,6 +56,13 @@ const DEFAULT_NOTIFICATION_SETTINGS = {
 const escapeRegex = (value = "") =>
   String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const DASHBOARD_STATS_CACHE_TTL_MS = 30 * 1000;
+let dashboardStatsCache = {
+  data: null,
+  expiresAt: 0,
+  pending: null,
+};
+
 class AdminService {
   getVisibleUsersFilter(filter = {}) {
     return {
@@ -284,167 +291,139 @@ class AdminService {
       .lean();
   }
 
-  async getDashboardStats() {
+  countDocuments(model, filter = {}, options = {}) {
+    const query = model.countDocuments(filter);
+
+    if (options.hint) {
+      query.hint(options.hint);
+    }
+
+    return query;
+  }
+
+  getDashboardUserStats() {
+    const visibleUsersFilter = this.getVisibleUsersFilter({});
+    const heroFilter = combineMongoFilters(
+      visibleUsersFilter,
+      buildRoleMembershipFilter(ROLES.WORKER)
+    );
+    const customerFilter = combineMongoFilters(
+      visibleUsersFilter,
+      buildRoleMembershipFilter(ROLES.CUSTOMER)
+    );
+
+    return Promise.all([
+      this.countDocuments(userRepository.model, visibleUsersFilter),
+      this.countDocuments(userRepository.model, heroFilter),
+      this.countDocuments(
+        userRepository.model,
+        combineMongoFilters(heroFilter, {
+          workerStatus: "approved",
+          status: "active",
+        })
+      ),
+      this.countDocuments(
+        userRepository.model,
+        combineMongoFilters(heroFilter, {
+          workerStatus: "pending",
+        })
+      ),
+      this.countDocuments(userRepository.model, customerFilter),
+      this.countDocuments(
+        userRepository.model,
+        combineMongoFilters(customerFilter, {
+          status: "active",
+        })
+      ),
+    ]).then(
+      ([
+        totalUsers,
+        totalHeroes,
+        activeHeroes,
+        pendingHeroes,
+        totalCustomers,
+        activeCustomers,
+      ]) => ({
+        totalUsers,
+        totalHeroes,
+        activeHeroes,
+        pendingHeroes,
+        totalCustomers,
+        activeCustomers,
+      })
+    );
+  }
+
+  getDashboardJobStats() {
+    return Promise.all([
+      this.countDocuments(jobRepository.model, {}, { hint: { _id: 1 } }),
+      this.countDocuments(jobRepository.model, {
+        status: "new",
+        assignedWorker: null,
+      }),
+    ]).then(([totalJobs, pendingJobs]) => ({
+      totalJobs,
+      pendingJobs,
+    }));
+  }
+
+  async getDashboardPaymentStats() {
+    const [totalPayments, paidSummaryResult] = await Promise.all([
+      this.countDocuments(paymentRepository.model, {}, { hint: { _id: 1 } }),
+      paymentRepository.model.aggregate([
+        {
+          $match: {
+            status: "paid",
+          },
+        },
+        {
+          $project: {
+            amount: { $ifNull: ["$amount", 0] },
+            platformFee: { $ifNull: ["$platformFee", 0] },
+            bookingFee: { $ifNull: ["$bookingFee", 0] },
+            workerPayout: { $ifNull: ["$workerPayout", 0] },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: "$amount" },
+            totalPlatformFee: { $sum: { $add: ["$platformFee", "$bookingFee"] } },
+            totalBookingFee: { $sum: "$bookingFee" },
+            totalHeroPayout: { $sum: "$workerPayout" },
+          },
+        },
+      ]),
+    ]);
+    const paidSummary = paidSummaryResult[0] || {};
+
+    return {
+      totalPayments,
+      totalAmount: paidSummary.totalAmount || 0,
+      totalPlatformFee: paidSummary.totalPlatformFee || 0,
+      totalBookingFee: paidSummary.totalBookingFee || 0,
+      totalHeroPayout: paidSummary.totalHeroPayout || 0,
+    };
+  }
+
+  async buildDashboardStats() {
     const [
-      userStatsResult,
-      jobStatsResult,
+      userStats,
+      jobStats,
       totalBookings,
-      paymentStatsResult,
+      paymentStats,
       totalSupportConversations,
       recentBookings,
       recentHeroApplications,
     ] = await Promise.all([
-      userRepository.model.aggregate([
-        {
-          $match: this.getVisibleUsersFilter({}),
-        },
-        {
-          $addFields: {
-            normalizedRoles: {
-              $setUnion: [
-                {
-                  $cond: [{ $isArray: "$roles" }, "$roles", []],
-                },
-                [{ $ifNull: ["$role", ""] }],
-              ],
-            },
-          },
-        },
-        {
-          $addFields: {
-            isHero: { $in: [ROLES.WORKER, "$normalizedRoles"] },
-            isCustomer: { $in: [ROLES.CUSTOMER, "$normalizedRoles"] },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalUsers: { $sum: 1 },
-            totalHeroes: {
-              $sum: { $cond: ["$isHero", 1, 0] },
-            },
-            activeHeroes: {
-              $sum: {
-                $cond: [
-                  {
-                    $and: [
-                      "$isHero",
-                      { $eq: ["$workerStatus", "approved"] },
-                      { $eq: ["$status", "active"] },
-                    ],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-            pendingHeroes: {
-              $sum: {
-                $cond: [
-                  {
-                    $and: ["$isHero", { $eq: ["$workerStatus", "pending"] }],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-            totalCustomers: {
-              $sum: { $cond: ["$isCustomer", 1, 0] },
-            },
-            activeCustomers: {
-              $sum: {
-                $cond: [
-                  {
-                    $and: ["$isCustomer", { $eq: ["$status", "active"] }],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-          },
-        },
-      ]),
-      jobRepository.model.aggregate([
-        {
-          $group: {
-            _id: null,
-            totalJobs: { $sum: 1 },
-            pendingJobs: {
-              $sum: {
-                $cond: [
-                  {
-                    $and: [
-                      { $eq: ["$status", "new"] },
-                      { $eq: ["$assignedWorker", null] },
-                    ],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-          },
-        },
-      ]),
-      bookingRepository.count({}),
-      paymentRepository.model.aggregate([
-        {
-          $group: {
-            _id: null,
-            totalPayments: { $sum: 1 },
-            totalAmount: {
-              $sum: {
-                $cond: [{ $eq: ["$status", "paid"] }, "$amount", 0],
-              },
-            },
-            totalPlatformFee: {
-              $sum: {
-                $cond: [
-                  { $eq: ["$status", "paid"] },
-                  { $add: [{ $ifNull: ["$platformFee", 0] }, { $ifNull: ["$bookingFee", 0] }] },
-                  0,
-                ],
-              },
-            },
-            totalBookingFee: {
-              $sum: {
-                $cond: [{ $eq: ["$status", "paid"] }, "$bookingFee", 0],
-              },
-            },
-            totalHeroPayout: {
-              $sum: {
-                $cond: [{ $eq: ["$status", "paid"] }, "$workerPayout", 0],
-              },
-            },
-          },
-        },
-      ]),
-      supportRepository.count({}),
+      this.getDashboardUserStats(),
+      this.getDashboardJobStats(),
+      this.countDocuments(bookingRepository.model, {}, { hint: { _id: 1 } }),
+      this.getDashboardPaymentStats(),
+      this.countDocuments(supportRepository.model, {}, { hint: { _id: 1 } }),
       this.getDashboardRecentBookings(),
       this.getDashboardRecentHeroApplications(),
     ]);
-
-    const userStats = userStatsResult[0] || {
-      totalUsers: 0,
-      totalHeroes: 0,
-      activeHeroes: 0,
-      pendingHeroes: 0,
-      totalCustomers: 0,
-      activeCustomers: 0,
-    };
-    const jobStats = jobStatsResult[0] || {
-      totalJobs: 0,
-      pendingJobs: 0,
-    };
-    const paymentStats = paymentStatsResult[0] || {
-      totalPayments: 0,
-      totalAmount: 0,
-      totalPlatformFee: 0,
-      totalBookingFee: 0,
-      totalHeroPayout: 0,
-    };
 
     return {
       totalUsers: userStats.totalUsers,
@@ -465,6 +444,39 @@ class AdminService {
       recentBookings,
       recentHeroApplications,
     };
+  }
+
+  async getDashboardStats() {
+    const now = Date.now();
+
+    if (dashboardStatsCache.data && dashboardStatsCache.expiresAt > now) {
+      return dashboardStatsCache.data;
+    }
+
+    if (!dashboardStatsCache.pending) {
+      dashboardStatsCache.pending = this.buildDashboardStats()
+        .then((stats) => {
+          dashboardStatsCache = {
+            data: stats,
+            expiresAt: Date.now() + DASHBOARD_STATS_CACHE_TTL_MS,
+            pending: null,
+          };
+
+          return stats;
+        })
+        .catch((error) => {
+          const staleStats = dashboardStatsCache.data;
+          dashboardStatsCache.pending = null;
+
+          if (staleStats) {
+            return staleStats;
+          }
+
+          throw error;
+        });
+    }
+
+    return dashboardStatsCache.pending;
   }
 
   async listHeroes(query = {}) {
@@ -1194,9 +1206,19 @@ class AdminService {
           "job booking amount jobSubtotal bookingFee currency status platformFee platformFeePercentage workerPayout paidAt authorizedAt authorizationExpiresAt paymentMethod workerTransferStatus refundReason stripeRefundStatus stripeDisputeStatus createdAt",
       }),
     ]);
+    const persistedPhotos = await jobService.persistJobPhotos(job.photos, {
+      strict: false,
+    });
+
+    if (JSON.stringify(persistedPhotos) !== JSON.stringify(job.photos || [])) {
+      await jobRepository.updateById(job._id, {
+        photos: persistedPhotos,
+      });
+    }
 
     return {
       ...job,
+      photos: persistedPhotos,
       booking: booking || null,
       payment: payment || null,
     };

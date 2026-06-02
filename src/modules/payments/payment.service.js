@@ -912,9 +912,25 @@ class PaymentService {
       throw new AppError("Draft job payload is missing from payment metadata", 500);
     }
 
+    const persistedPhotoUrls = await jobService.persistJobPhotos(draftJob.photos, {
+      strict: false,
+    });
+    const hasPersistedNewPhotos =
+      JSON.stringify(persistedPhotoUrls) !== JSON.stringify(draftJob.photos || []);
+    const jobDraft = {
+      ...draftJob,
+      photos: persistedPhotoUrls,
+    };
+
+    if (hasPersistedNewPhotos) {
+      await paymentRepository.updateById(payment._id, {
+        "metadata.draftJob.photos": persistedPhotoUrls,
+      });
+    }
+
     try {
       return await jobRepository.create({
-        ...draftJob,
+        ...jobDraft,
         sourcePayment: payment._id,
         isPaid,
         paymentStatus,
@@ -1604,6 +1620,8 @@ class PaymentService {
         sessionId: reusablePayment.stripeCheckoutSessionId,
       };
     }
+
+    normalizedJobDraft.photos = await jobService.persistJobPhotos(normalizedJobDraft.photos);
 
     const paymentRecord =
       reusablePayment && this.isRecentPendingCheckout(reusablePayment)

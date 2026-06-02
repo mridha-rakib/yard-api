@@ -1,5 +1,9 @@
 const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
+const {
+  isManagedMediaUrl,
+  persistDataUrlToMediaStorage,
+} = require("../../utils/media-storage");
 const { ROLES } = require("../../constants/roles");
 const { hasAnyRole, hasRole } = require("../../utils/user-roles");
 const bookingRepository = require("../bookings/booking.repository");
@@ -69,6 +73,42 @@ class JobService {
     return "low";
   }
 
+  async persistJobPhotos(photos = [], options = {}) {
+    if (!Array.isArray(photos) || !photos.length) {
+      return [];
+    }
+
+    const strict = options.strict !== false;
+
+    return Promise.all(
+      photos
+        .map((photoUrl) => String(photoUrl || "").trim())
+        .filter(Boolean)
+        .map(async (photoUrl, index) => {
+          if (
+            !photoUrl.startsWith("data:") ||
+            isManagedMediaUrl(photoUrl, "job-photos")
+          ) {
+            return photoUrl;
+          }
+
+          try {
+            return await persistDataUrlToMediaStorage(photoUrl, {
+              directoryName: "job-photos",
+              filePrefix: `job-photo-${index + 1}`,
+              requiredMimePrefix: "image/",
+            });
+          } catch (error) {
+            if (strict) {
+              throw error;
+            }
+
+            return photoUrl;
+          }
+        })
+    );
+  }
+
   mapCreatePayload(user, payload) {
     const serviceId = payload.serviceId || "";
     const serviceType = payload.serviceType || payload.serviceTitle || payload.category || serviceId;
@@ -133,6 +173,7 @@ class JobService {
 
     const mappedPayload = this.mapCreatePayload(user, payload);
     this.validateCreatePayload(mappedPayload);
+    mappedPayload.photos = await this.persistJobPhotos(mappedPayload.photos);
 
     const job = await jobRepository.create(mappedPayload);
     const hydratedJob = await jobRepository.findJobWithRelations(job._id);
@@ -479,7 +520,7 @@ class JobService {
     }
 
     if (payload.photos !== undefined || payload.photoUrls !== undefined) {
-      update.photos = payload.photos || payload.photoUrls || [];
+      update.photos = await this.persistJobPhotos(payload.photos || payload.photoUrls || []);
     }
 
     if (payload.estimatedPrice !== undefined || payload.estimatedTotal !== undefined) {

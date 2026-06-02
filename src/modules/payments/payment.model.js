@@ -320,6 +320,7 @@ const paymentSchema = new mongoose.Schema(
 
 paymentSchema.index({ customer: 1, status: 1, createdAt: -1 });
 paymentSchema.index({ worker: 1, status: 1, createdAt: -1 });
+paymentSchema.index({ status: 1, amount: 1, platformFee: 1, bookingFee: 1, workerPayout: 1 });
 paymentSchema.index({ status: 1, paidAt: -1, createdAt: -1 });
 paymentSchema.index({ status: 1, paymentMethod: 1, createdAt: -1 });
 paymentSchema.index({ gateway: 1, status: 1, paymentMethod: 1, createdAt: -1 });

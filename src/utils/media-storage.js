@@ -187,6 +187,7 @@ const persistDataUrlToMediaStorage = async (
       Bucket: env.awsS3Bucket,
       Key: objectKey,
       Body: objectBody,
+      CacheControl: "public, max-age=31536000, immutable",
       ContentType: parsed.mimeType,
     })
   );

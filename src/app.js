@@ -44,7 +44,16 @@ app.post(
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads")));
+app.use(
+  "/uploads",
+  express.static(path.resolve(process.cwd(), "uploads"), {
+    immutable: true,
+    maxAge: "365d",
+    setHeaders: (res) => {
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    },
+  })
+);
 
 app.use(env.apiPrefix, apiRouter);
 

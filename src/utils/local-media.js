@@ -7,6 +7,13 @@ const { parseDataUrl } = require("./data-url");
 const UPLOADS_ROOT = path.resolve(process.cwd(), "uploads");
 
 const MIME_EXTENSION_MAP = {
+  "image/gif": ".gif",
+  "image/heic": ".heic",
+  "image/heif": ".heif",
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
   "video/mp4": ".mp4",
   "video/quicktime": ".mov",
   "video/webm": ".webm",

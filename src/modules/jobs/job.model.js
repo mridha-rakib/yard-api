@@ -153,6 +153,7 @@ const jobSchema = new mongoose.Schema(
 );
 
 jobSchema.index({ sourcePayment: 1 }, { unique: true, sparse: true });
+jobSchema.index({ createdAt: -1 });
 jobSchema.index({ customer: 1, createdAt: -1 });
 jobSchema.index({ assignedWorker: 1, createdAt: -1 });
 jobSchema.index({ status: 1, assignedWorker: 1, createdAt: -1 });

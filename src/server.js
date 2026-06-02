@@ -19,7 +19,7 @@ const startServer = async () => {
 
     if (!isS3Configured()) {
       logger.warn(
-        "AWS S3 proof-media storage is not configured. Falling back to local /uploads storage."
+        "AWS S3 media storage is not configured. Falling back to local /uploads storage."
       );
     }
 

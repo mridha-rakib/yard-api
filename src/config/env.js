@@ -90,7 +90,10 @@ const env = {
   awsRegion: cleanValue(process.env.AWS_REGION),
   awsAccessKeyId: cleanValue(process.env.AWS_ACCESS_KEY_ID),
   awsSecretAccessKey: cleanValue(process.env.AWS_SECRET_ACCESS_KEY),
-  awsS3Bucket: cleanValue(process.env.AWS_S3_BUCKET),
+  awsS3Bucket: cleanValue(
+    process.env.AWS_S3_BUCKET,
+    cleanValue(process.env.AWS_S3_BUCKET_NAME)
+  ),
   awsS3PublicBaseUrl: cleanValue(process.env.AWS_S3_PUBLIC_BASE_URL),
   awsS3Prefix: cleanValue(process.env.AWS_S3_PREFIX, "proof-media"),
   defaultPlatformFeePercentage: parseNumber(process.env.DEFAULT_PLATFORM_FEE_PERCENTAGE, 12),
