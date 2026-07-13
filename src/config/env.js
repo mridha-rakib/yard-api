@@ -94,8 +94,14 @@ const env = {
     process.env.AWS_S3_BUCKET,
     cleanValue(process.env.AWS_S3_BUCKET_NAME)
   ),
+  awsS3Endpoint: cleanValue(process.env.AWS_S3_ENDPOINT),
+  awsS3ForcePathStyle: parseBoolean(process.env.AWS_S3_FORCE_PATH_STYLE, false),
   awsS3PublicBaseUrl: cleanValue(process.env.AWS_S3_PUBLIC_BASE_URL),
   awsS3Prefix: cleanValue(process.env.AWS_S3_PREFIX, "proof-media"),
+  awsS3SignedUrlExpiresInSeconds: parseNumber(
+    process.env.AWS_S3_SIGNED_URL_EXPIRES_IN_SECONDS,
+    900
+  ),
   defaultPlatformFeePercentage: parseNumber(process.env.DEFAULT_PLATFORM_FEE_PERCENTAGE, 12),
   customerBookingFeeAmount: parseNumber(process.env.CUSTOMER_BOOKING_FEE_AMOUNT, 3),
   adminName: cleanValue(process.env.ADMIN_NAME, "John Administrator"),

@@ -35,6 +35,7 @@ const {
   combineMongoFilters,
   hasRole,
 } = require("../../utils/user-roles");
+const { normalizeMediaUrl, normalizeMediaUrls } = require("../../utils/media-storage");
 
 const DEFAULT_PLATFORM_SETTINGS = {
   name: "Yard Heroes",
@@ -1222,8 +1223,14 @@ class AdminService {
 
     return {
       ...job,
-      photos: persistedPhotos,
-      booking: booking || null,
+      photos: await normalizeMediaUrls(persistedPhotos),
+      booking: booking
+        ? {
+            ...booking,
+            verificationPhotoUrls: await normalizeMediaUrls(booking.verificationPhotoUrls),
+            verificationVideoUrl: await normalizeMediaUrl(booking.verificationVideoUrl),
+          }
+        : null,
       payment: payment || null,
     };
   }

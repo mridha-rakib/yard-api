@@ -12,6 +12,8 @@ const { assertDataUrlMaxBytes, assertDataUrlMimeType } = require("../../utils/da
 const {
   deleteMediaObjectByUrl,
   isManagedMediaUrl,
+  normalizeMediaUrl,
+  normalizeMediaUrls,
   persistDataUrlToMediaStorage,
 } = require("../../utils/media-storage");
 
@@ -27,6 +29,20 @@ const formatStatusLabel = (status = "") =>
     .join(" ");
 
 class BookingService {
+  async normalizeProofMedia(booking = null) {
+    if (!booking) {
+      return booking;
+    }
+
+    const normalizedBooking = booking?.toObject ? booking.toObject() : booking;
+
+    return {
+      ...normalizedBooking,
+      verificationPhotoUrls: await normalizeMediaUrls(normalizedBooking.verificationPhotoUrls),
+      verificationVideoUrl: await normalizeMediaUrl(normalizedBooking.verificationVideoUrl),
+    };
+  }
+
   sendCustomerHeroAssignedEmail(booking) {
     const customer = booking?.customer || {};
     const customerEmail = String(customer?.email || "").trim();
@@ -146,7 +162,7 @@ class BookingService {
       this.sendCustomerHeroAssignedEmail(hydratedBooking),
     ]);
 
-    return hydratedBooking;
+    return this.normalizeProofMedia(hydratedBooking);
   }
 
   async acceptAvailableJob(worker, jobId) {
@@ -207,7 +223,7 @@ class BookingService {
         this.sendCustomerHeroAssignedEmail(hydratedBooking),
       ]);
 
-      return hydratedBooking;
+      return this.normalizeProofMedia(hydratedBooking);
     } catch (error) {
       await jobRepository.releaseClaimedJob(claimedJob._id, worker._id);
 
@@ -235,7 +251,7 @@ class BookingService {
       throw new AppError("You do not have access to this booking", 403);
     }
 
-    return booking;
+    return this.normalizeProofMedia(booking);
   }
 
   async listBookings(user, query = {}) {
@@ -252,10 +268,15 @@ class BookingService {
       filter.status = query.status;
     }
 
-    return bookingRepository.paginateWithRelations(filter, {
+    const result = await bookingRepository.paginateWithRelations(filter, {
       ...pagination,
       sort: { createdAt: -1 },
     });
+
+    return {
+      ...result,
+      items: await Promise.all(result.items.map((booking) => this.normalizeProofMedia(booking))),
+    };
   }
 
   async startBooking(user, bookingId) {
@@ -299,7 +320,7 @@ class BookingService {
       }),
     ]);
 
-    return refreshedBooking;
+    return this.normalizeProofMedia(refreshedBooking);
   }
 
   async completeBooking(user, bookingId, payload = {}) {
@@ -451,7 +472,7 @@ class BookingService {
         ),
       ]);
 
-      return refreshedBooking;
+      return this.normalizeProofMedia(refreshedBooking);
     } catch (error) {
       await Promise.allSettled(
         uploadedProofMediaUrls.map((mediaUrl) => deleteMediaObjectByUrl(mediaUrl))
@@ -559,7 +580,7 @@ class BookingService {
     ]);
 
     return {
-      booking: refreshedBooking,
+      booking: await this.normalizeProofMedia(refreshedBooking),
       paymentCapture,
     };
   }
@@ -632,7 +653,7 @@ class BookingService {
       }),
     ]);
 
-    return refreshedBooking;
+    return this.normalizeProofMedia(refreshedBooking);
   }
 
   async updateBookingStatusByAdmin(adminUser, bookingId, status) {
@@ -716,7 +737,7 @@ class BookingService {
       }),
     ]);
 
-    return refreshedBooking;
+    return this.normalizeProofMedia(refreshedBooking);
   }
 }
 
