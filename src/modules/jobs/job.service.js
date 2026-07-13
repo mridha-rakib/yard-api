@@ -2,6 +2,8 @@ const AppError = require("../../errors/AppError");
 const buildPagination = require("../../utils/pagination");
 const {
   isManagedMediaUrl,
+  normalizeMediaUrl,
+  normalizeMediaUrls,
   persistDataUrlToMediaStorage,
 } = require("../../utils/media-storage");
 const { ROLES } = require("../../constants/roles");
@@ -109,6 +111,32 @@ class JobService {
     );
   }
 
+  async normalizeBookingMedia(booking = null) {
+    if (!booking) {
+      return null;
+    }
+
+    return {
+      ...booking,
+      verificationPhotoUrls: await normalizeMediaUrls(booking.verificationPhotoUrls),
+      verificationVideoUrl: await normalizeMediaUrl(booking.verificationVideoUrl),
+    };
+  }
+
+  async normalizeJobMedia(job = null) {
+    if (!job) {
+      return job;
+    }
+
+    const normalizedJob = job?.toObject ? job.toObject() : job;
+
+    return {
+      ...normalizedJob,
+      photos: await normalizeMediaUrls(normalizedJob.photos),
+      booking: await this.normalizeBookingMedia(normalizedJob.booking),
+    };
+  }
+
   mapCreatePayload(user, payload) {
     const serviceId = payload.serviceId || "";
     const serviceType = payload.serviceType || payload.serviceTitle || payload.category || serviceId;
@@ -204,7 +232,7 @@ class JobService {
       ]);
     }
 
-    return hydratedJob;
+    return this.normalizeJobMedia(hydratedJob);
   }
 
   buildQueryFilter(query = {}) {
@@ -291,16 +319,16 @@ class JobService {
       payments.map((payment) => [String(payment.job), payment])
     );
 
-    return items.map((item) => {
+    return Promise.all(items.map((item) => {
       const normalizedItem = item?.toObject ? item.toObject() : item;
       const jobId = String(normalizedItem._id);
 
-      return {
+      return this.normalizeJobMedia({
         ...normalizedItem,
         booking: bookingsByJobId.get(jobId) || null,
         payment: paymentsByJobId.get(jobId) || null,
-      };
-    });
+      });
+    }));
   }
 
   async listJobs(requestingUser, query = {}) {
@@ -533,7 +561,7 @@ class JobService {
     }
 
     const updatedJob = await jobRepository.updateById(jobId, update);
-    return jobRepository.findJobWithRelations(updatedJob._id);
+    return this.normalizeJobMedia(await jobRepository.findJobWithRelations(updatedJob._id));
   }
 
   async cancelJob(user, jobId, reason = "") {
@@ -557,7 +585,7 @@ class JobService {
       cancelReason: reason,
     });
 
-    return jobRepository.findJobWithRelations(updatedJob._id);
+    return this.normalizeJobMedia(await jobRepository.findJobWithRelations(updatedJob._id));
   }
 }
 
